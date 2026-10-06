@@ -1,0 +1,30 @@
+{
+  "name": "cf-free-webdav",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "cloudflare": {
+    "bindings": {
+      "WEBDAV_PASSWORD": {
+        "description": "WebDAV Basic Auth password. Use a long, unique random value; do not reuse another account password."
+      }
+    }
+  },
+  "scripts": {
+    "types": "wrangler types",
+    "predev": "wrangler types",
+    "dev": "wrangler dev",
+    "predeploy": "wrangler types",
+    "deploy": "wrangler deploy",
+    "deploy:setup": "node ./scripts/deploy.mjs",
+    "pretypecheck": "wrangler types",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "wrangler": ">=4.45.0 <5.0.0"
+  }
+}

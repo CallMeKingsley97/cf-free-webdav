@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "cf-free-webdav",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-06",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1
+  },
+  "vars": {
+    "WEBDAV_USERNAME": "webdav"
+  },
+  "r2_buckets": [
+    {
+      "binding": "FILES"
+    }
+  ]
+}
