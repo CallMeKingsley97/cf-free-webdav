@@ -4,6 +4,8 @@
 
 A single-user WebDAV service built with Cloudflare Workers and R2. The Worker handles WebDAV requests, HTTPS, and Basic Authentication. Files are stored in a private R2 bucket. No always-on server or database is required.
 
+If this project is useful to you, please consider giving it a star on [GitHub](https://github.com/CallMeKingsley97/cf-free-webdav).
+
 ## Deploy to Cloudflare
 
 ### Connect the existing GitHub repository

@@ -4,6 +4,8 @@
 
 基于 Cloudflare Workers 和 R2 的单用户 WebDAV 服务。Worker 负责 WebDAV 请求、HTTPS 和 Basic Auth；私有 R2 bucket 保存文件。项目不需要常驻服务器或数据库。
 
+如果这个项目对你有帮助，欢迎在 [GitHub 给项目点个 Star](https://github.com/CallMeKingsley97/cf-free-webdav)，支持后续改进。
+
 ## 部署到 Cloudflare
 
 ### 连接已有 GitHub 仓库
