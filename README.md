@@ -2,18 +2,26 @@
 
 基于 Cloudflare Workers 和 R2 的单用户 WebDAV 服务。Worker 负责 WebDAV 请求、HTTPS 和 Basic Auth；私有 R2 bucket 保存文件。项目不需要常驻服务器或数据库。
 
-## 一键部署
+## 部署到 Cloudflare
 
-通过下面的按钮，可以将本项目部署到 Cloudflare，并在你的 GitHub 账户中创建项目副本：
+### 连接已有 GitHub 仓库
+
+如果要部署当前仓库并让后续 GitHub 提交自动发布，请连接已有仓库，不要使用下面的 Deploy 按钮。
+
+1. 在 GitHub 的 **Settings → Applications → Installed GitHub Apps** 中打开 **Cloudflare Workers and Pages**，确认它有权访问 `CallMeKingsley97/cf-free-webdav`。若 Cloudflare 提示授权过期，按提示重新授权或安装该应用。
+2. 在 Cloudflare Dashboard 打开 **Workers & Pages → Create application → Get started（Import a repository）**。
+3. 选择 GitHub 账户和已有的 `cf-free-webdav` 仓库，选择 `main` 分支并完成创建。这个流程会创建 Cloudflare Worker 并连接现有仓库，不会要求创建 GitHub 仓库副本。
+4. 部署完成后，在该 Worker 的 **Settings → Variables and Secrets** 中新增 `WEBDAV_PASSWORD`，类型选择 **Secret**，填写强随机密码并部署新版本。
+
+后续推送到 `main` 会自动构建和部署。WebDAV 地址为 `https://<worker-name>.<account-subdomain>.workers.dev/dav/`，用户名默认为 `webdav`。首次部署的 R2 bucket 由 Wrangler 根据配置创建；该功能要求 Wrangler `4.45.0+`，目前处于[自动资源创建 Beta](https://developers.cloudflare.com/changelog/2025-10-24-automatic-resource-provisioning/)。
+
+### 部署为一个新的项目副本
+
+下面的按钮适用于其他人想从本项目模板创建自己的 GitHub 仓库。Cloudflare 会复制源仓库到部署者的 GitHub 账户；这不是连接并部署当前仓库的方式。
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/CallMeKingsley97/cf-free-webdav)
 
-部署流程：
-
-1. 点击按钮，授权 Cloudflare 访问 GitHub，并选择 Worker 名称和新建的项目仓库。
-2. 在部署配置页为 `WEBDAV_PASSWORD` 设置强随机密码。若部署流程没有询问该值，先完成部署，再在 Cloudflare Dashboard 的 **Settings → Variables and Secrets** 中新增同名 **Secret** 并部署新版本。
-3. Cloudflare 会构建并部署 Worker。配置中的 R2 binding 未指定 bucket 名，Wrangler `4.45.0+` 会自动创建并绑定一个以 Worker 名称开头的 bucket。Wrangler 的[自动资源创建目前处于 Beta](https://developers.cloudflare.com/changelog/2025-10-24-automatic-resource-provisioning/)；通过 Cloudflare 仪表盘部署时，资源 ID 保存在 Cloudflare 账户中，不会写回 GitHub 仓库。
-4. 等待部署完成后，WebDAV 地址为 `https://<worker-name>.<account-subdomain>.workers.dev/dav/`，用户名默认为 `webdav`。
+使用按钮时，在部署流程中填写 `WEBDAV_PASSWORD`。如果页面没有要求设置，先完成部署，再按上面的步骤在 Worker 设置中添加 Secret。
 
 服务在没有密码 Secret 时会对 `/dav/` 返回 `503` 并拒绝访问；设置 Secret 后即可使用。默认用户名为 `webdav`；需要更改时，修改 `wrangler.jsonc` 中的 `WEBDAV_USERNAME` 并重新部署。不要把密码写进 `wrangler.jsonc`、README 或 GitHub Actions 配置。
 
