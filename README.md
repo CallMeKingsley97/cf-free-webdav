@@ -1,31 +1,33 @@
 # CF Free WebDAV
 
-基于 Cloudflare Workers 和 R2 的单用户 WebDAV 服务。Worker 负责 WebDAV 请求、HTTPS 和 Basic Auth；私有 R2 bucket 保存文件。项目不需要常驻服务器或数据库。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-## 部署到 Cloudflare
+A single-user WebDAV service built with Cloudflare Workers and R2. The Worker handles WebDAV requests, HTTPS, and Basic Authentication. Files are stored in a private R2 bucket. No always-on server or database is required.
 
-### 连接已有 GitHub 仓库
+## Deploy to Cloudflare
 
-如果要部署当前仓库并让后续 GitHub 提交自动发布，请连接已有仓库，不要使用下面的 Deploy 按钮。
+### Connect the existing GitHub repository
 
-1. 在 GitHub 的 **Settings → Applications → Installed GitHub Apps** 中打开 **Cloudflare Workers and Pages**，确认它有权访问 `CallMeKingsley97/cf-free-webdav`。若 Cloudflare 提示授权过期，按提示重新授权或安装该应用。
-2. 在 Cloudflare Dashboard 打开 **Workers & Pages → Create application → Get started（Import a repository）**。
-3. 选择 GitHub 账户和已有的 `cf-free-webdav` 仓库，选择 `main` 分支并完成创建。这个流程会创建 Cloudflare Worker 并连接现有仓库，不会要求创建 GitHub 仓库副本。
-4. 部署完成后，在该 Worker 的 **Settings → Variables and Secrets** 中新增 `WEBDAV_PASSWORD`，类型选择 **Secret**，填写强随机密码并部署新版本。
+To deploy this repository and automatically publish future commits, connect the existing repository. Do not use the Deploy button below for this workflow.
 
-后续推送到 `main` 会自动构建和部署。WebDAV 地址为 `https://<worker-name>.<account-subdomain>.workers.dev/dav/`，用户名默认为 `webdav`。首次部署的 R2 bucket 由 Wrangler 根据配置创建；该功能要求 Wrangler `4.45.0+`，目前处于[自动资源创建 Beta](https://developers.cloudflare.com/changelog/2025-10-24-automatic-resource-provisioning/)。
+1. In GitHub, open **Settings → Applications → Installed GitHub Apps** and confirm that **Cloudflare Workers and Pages** can access `CallMeKingsley97/cf-free-webdav`. Reauthorize or reinstall the app if Cloudflare reports that authorization has expired.
+2. In the Cloudflare dashboard, go to **Workers & Pages → Create application → Get started (Import a repository)**.
+3. Select your GitHub account, choose the existing `cf-free-webdav` repository and its `main` branch, then finish setup. This creates a Cloudflare Worker connected to the existing repository; it does not create a GitHub repository copy.
+4. After deployment, open the Worker’s **Settings → Variables and Secrets** and add `WEBDAV_PASSWORD` as a **Secret**. Use a strong, unique password, then deploy the updated version.
 
-### 部署为一个新的项目副本
+Future pushes to `main` will trigger builds and deployments. The WebDAV URL is `https://<worker-name>.<account-subdomain>.workers.dev/dav/`; the default username is `webdav`. Wrangler creates the R2 bucket from the binding configuration. Automatic resource provisioning requires Wrangler `4.45.0` or later and is currently in [Beta](https://developers.cloudflare.com/changelog/2025-10-24-automatic-resource-provisioning/).
 
-下面的按钮适用于其他人想从本项目模板创建自己的 GitHub 仓库。Cloudflare 会复制源仓库到部署者的 GitHub 账户；这不是连接并部署当前仓库的方式。
+### Deploy a new project copy
+
+The button below is for people who want to create their own GitHub repository from this project template. Cloudflare copies the source repository to the deployer’s GitHub account. This does not connect and deploy the current repository.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/CallMeKingsley97/cf-free-webdav)
 
-使用按钮时，在部署流程中填写 `WEBDAV_PASSWORD`。如果页面没有要求设置，先完成部署，再按上面的步骤在 Worker 设置中添加 Secret。
+Set `WEBDAV_PASSWORD` during the button flow if prompted. If the flow does not ask for it, finish deployment and add the Secret in the Worker settings as described above.
 
-服务在没有密码 Secret 时会对 `/dav/` 返回 `503` 并拒绝访问；设置 Secret 后即可使用。默认用户名为 `webdav`；需要更改时，修改 `wrangler.jsonc` 中的 `WEBDAV_USERNAME` 并重新部署。不要把密码写进 `wrangler.jsonc`、README 或 GitHub Actions 配置。
+The service returns `503` for WebDAV requests until `WEBDAV_PASSWORD` is configured. The default username is `webdav`; to change it, edit `WEBDAV_USERNAME` in `wrangler.jsonc` and deploy again. Never put the password in `wrangler.jsonc`, this README, or GitHub Actions configuration.
 
-Deploy to Cloudflare 按钮要求源仓库公开。账号需要启用 Workers 和 R2；若账号或部署流程尚未提供自动创建资源能力，请先在 Cloudflare 中开通 R2，再使用命令行部署。也可从本地终端部署：
+The Deploy to Cloudflare button requires a public source repository. Your Cloudflare account must have Workers and R2 enabled. If automatic resource provisioning is unavailable for your account or deployment flow, enable R2 in Cloudflare and deploy from a local terminal instead:
 
 ```bash
 npm install
@@ -33,67 +35,67 @@ npx wrangler login
 npm run deploy:setup
 ```
 
-脚本会先部署 Worker 并创建 R2 bucket，然后由 Wrangler 安全地提示输入密码，最后发布设置了 Secret 的版本。之后更新代码可运行 `npm run deploy`。
+The setup script deploys the Worker and creates the R2 bucket, prompts for the password through Wrangler, then deploys a version with the Secret configured. For later code updates, run `npm run deploy`.
 
-## 本地开发
+## Local development
 
 ```bash
 npm install
 cp .dev.vars.example .dev.vars
-# 编辑 .dev.vars，替换为自己的本地密码
+# Edit .dev.vars and set a local password
 npm run typecheck
 npm run dev
 ```
 
-本地开发使用 Wrangler 的本地 R2 模拟存储；本地文件不会自动同步到 Cloudflare。`.dev.vars` 已加入 `.gitignore`。
-`npm run dev`、`npm run deploy` 和 `npm run typecheck` 会先从 `wrangler.jsonc` 生成本地类型文件 `worker-configuration.d.ts`；该文件不提交到 Git。
+Wrangler uses a local R2 simulation during development; local files are not synchronized with Cloudflare. `.dev.vars` is ignored by Git. The `dev`, `deploy`, and `typecheck` scripts generate `worker-configuration.d.ts` from `wrangler.jsonc`; this generated file is not committed.
 
-## 支持范围
+## Supported WebDAV methods
 
-| 方法 | 行为 |
+| Method | Behavior |
 | --- | --- |
-| `OPTIONS` | 返回服务支持的方法和 DAV 能力 |
-| `PROPFIND` | 返回 XML `207 Multi-Status`；支持 `Depth: 0` 和 `Depth: 1` |
-| `PROPPATCH` | 识别属性请求并以 `207 Multi-Status` 拒绝未持久化的属性修改 |
-| `GET`、`HEAD` | 下载文件、读取文件属性和字节范围 |
-| `PUT` | 上传或覆盖文件，保留常用 HTTP 元数据 |
-| `MKCOL` | 创建目录 |
-| `DELETE` | 删除文件或目录及其子项 |
-| `COPY`、`MOVE` | 复制或移动文件和目录 |
+| `OPTIONS` | Returns supported methods and DAV capabilities |
+| `PROPFIND` | Returns XML `207 Multi-Status`; supports `Depth: 0` and `Depth: 1` |
+| `PROPPATCH` | Parses property requests and rejects unsupported, non-persistent properties with property-level `403` responses |
+| `GET`, `HEAD` | Downloads files, reads metadata, and supports byte ranges |
+| `PUT` | Uploads or replaces files and preserves common HTTP metadata |
+| `MKCOL` | Creates a collection (directory) |
+| `DELETE` | Deletes a file or a collection and its children |
+| `COPY`, `MOVE` | Copies or moves files and collections |
 
-认证使用 HTTPS Basic Auth。R2 bucket 保持私有，只能通过 Worker 访问。目录以 R2 object key 前缀表示；空目录使用以 `/` 结尾的零字节对象标记。
+Authentication uses HTTPS Basic Authentication. The R2 bucket remains private and is accessible only through the Worker. Directories are represented by R2 object-key prefixes; empty directories use zero-byte marker objects ending in `/`.
 
-## 限制
+## Limitations
 
-- 这是面向个人使用的 WebDAV 常用功能子集，暂不支持 `LOCK` 和 `UNLOCK`。自定义死属性不会持久化，`PROPPATCH` 会返回属性级 `403`；依赖锁或自定义属性的客户端可能无法正常同步。
-- `COPY` 和 `MOVE` 通过读取后写入对象实现，不是原子操作。目录递归操作最多处理 1000 个对象，以限制单个请求的资源消耗。
-- `PROPFIND` 目录枚举会调用 R2 `ListObjects`，计入 A 类操作；大量同步客户端可能较快消耗该月免费额度。
-- Cloudflare Free 账户的单次请求体上限为 100 MB，因此单次 WebDAV `PUT` 不能上传超过该大小的文件。大文件分块上传需要客户端和服务端共同支持额外协议。
-- Cloudflare 当前的 R2 Standard 免费额度为每月 10 GB-month 存储、100 万次 A 类操作、1000 万次 B 类操作；Worker Free 包含每天 10 万次入站请求。出站流量免费，超出免费用量可能产生费用。以 Cloudflare 控制台和[官方定价页](https://developers.cloudflare.com/r2/pricing/)、[Workers 定价页](https://developers.cloudflare.com/workers/platform/pricing/)、[请求限制页](https://developers.cloudflare.com/workers/platform/limits/)为准。
-- 启用 R2 需要在 Cloudflare 账户中完成 R2 开通流程。请配置用量告警并定期检查账单；免费额度不是支出硬上限。
+- This project implements a practical subset of WebDAV for personal use. `LOCK` and `UNLOCK` are not supported. Custom dead properties are not persisted, and `PROPPATCH` returns property-level `403` responses. Clients that require locks or custom properties may not synchronize correctly.
+- `COPY` and `MOVE` copy object data and are not atomic. Recursive directory operations are limited to 1,000 objects per request.
+- Directory `PROPFIND` uses R2 `ListObjects`, which counts as a Class A operation. Frequent sync requests can consume the monthly free allowance.
+- Cloudflare Free accounts have a 100 MB maximum request body size, so a single WebDAV `PUT` cannot upload a larger file. Multipart uploads require additional protocol support from both the client and server.
+- Current R2 Standard free allowances include 10 GB-month of storage, 1 million Class A operations, and 10 million Class B operations per month. Workers Free includes 100,000 inbound requests per day. R2 egress is free. Usage beyond included allowances may incur charges. Check the [R2 pricing](https://developers.cloudflare.com/r2/pricing/), [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/), and [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) pages for current terms.
+- R2 must be enabled on your Cloudflare account. Configure usage alerts and check billing regularly; free allowances are not a hard spending limit.
 
-## 项目结构
+## Project structure
 
 ```text
 .
-  wrangler.jsonc       Cloudflare Worker、R2 binding 和变量配置
-  package.json         开发、类型生成、本地运行和部署命令
-  tsconfig.json        TypeScript 严格类型检查
-  .dev.vars.example    本地开发的 Secret 示例，不存储真实密码
-  .gitignore           排除依赖、构建输出和本地 Secret
+  wrangler.jsonc       Worker, R2 binding, and variable configuration
+  package.json         Development, type generation, and deployment scripts
+  tsconfig.json        Strict TypeScript configuration
+  .dev.vars.example    Local Secret example; contains no real password
+  .gitignore           Excludes dependencies, build output, and local Secrets
   LICENSE              MIT License
-  README.md             部署、开发和功能说明
+  README.md            English project documentation
+  README.zh-CN.md      Simplified Chinese project documentation
 src/
-  auth/       Basic Auth 验证
-  http/       WebDAV 路径解析与 HTTP/XML 响应
-  storage/    R2 对象、目录和分页操作
-  webdav/     WebDAV 方法路由与处理器
-  index.ts    Worker 入口、健康检查和请求鉴权
-  env.d.ts    密码 Secret 的类型补充声明
+  auth/       Basic Authentication
+  http/       WebDAV path parsing and HTTP/XML responses
+  storage/    R2 objects, collections, and pagination
+  webdav/     WebDAV method routing and handlers
+  index.ts    Worker entry point, health check, and request authentication
+  env.d.ts    Type declaration for the password Secret
 scripts/
-  deploy.mjs  首次部署、交互设置密码、再次发布
+  deploy.mjs  First deployment, interactive password setup, and redeployment
 ```
 
-## 开源
+## License
 
-本项目使用 MIT License。Cloudflare 的部署按钮要求源仓库公开；如果将本项目设为私有，请改用本地 Wrangler 命令部署。
+This project is licensed under the MIT License. The Deploy to Cloudflare button requires a public source repository. If you make this repository private, deploy with Wrangler from a local terminal instead.
