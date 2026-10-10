@@ -114,7 +114,8 @@ export async function fetchOfficialUsage(
   });
 
   if (!response.ok) {
-    throw new Error(`Cloudflare Analytics API returned ${response.status}.`);
+    const body = await response.text();
+    throw new Error(`Cloudflare Analytics API returned ${response.status}: ${body}`);
   }
 
   const result = (await response.json()) as GraphQLResponse;
