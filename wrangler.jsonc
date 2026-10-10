@@ -9,11 +9,30 @@
     "head_sampling_rate": 0.1
   },
   "vars": {
-    "WEBDAV_USERNAME": "webdav"
+    "WEBDAV_USERNAME": "webdav",
+    "QUOTA_THRESHOLD_PERCENT": "0.8",
+    "R2_BUCKET_NAME": "cf-free-webdav-files"
   },
   "r2_buckets": [
     {
       "binding": "FILES"
     }
-  ]
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "USAGE_STORE",
+        "class_name": "UsageStore"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["UsageStore"]
+    }
+  ],
+  "triggers": {
+    "crons": ["0 */6 * * *"]
+  }
 }

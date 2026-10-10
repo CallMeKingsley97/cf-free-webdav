@@ -15,6 +15,9 @@ import {
   StorageLimitError,
   type DavResource,
 } from "../storage/r2.js";
+import { estimatePrefixSize } from "../storage/size.js";
+import type { UsageClient } from "../monitor/limited-r2.js";
+import { QuotaExceededError } from "../monitor/quota.js";
 
 const ALLOW = "OPTIONS, PROPFIND, PROPPATCH, GET, HEAD, PUT, DELETE, MKCOL, COPY, MOVE";
 const XML_HEADERS = {
@@ -220,17 +223,22 @@ async function handleHead(env: Env, path: DavPath): Promise<Response> {
   return response(200, "", headers);
 }
 
-async function handlePut(request: Request, env: Env, path: DavPath): Promise<Response> {
+async function handlePut(request: Request, env: Env, path: DavPath, usage: UsageClient): Promise<Response> {
   if (!path.key || path.collectionHint) throw new DavError(405, "PUT requires a file path.");
   await requireParentCollection(env, path);
 
   const current = await statResource(env.FILES, path);
   if (current?.collection) throw new DavError(409, "A collection already uses this path.");
+  const previousSize = current ? current.size : 0;
+  const contentLength = requestSize(request);
+  const reservedSize = contentLength === null ? 0 : Math.max(contentLength - previousSize, 0);
+  await usage.reserve(reservedSize, 0, 0);
   const object = await env.FILES.put(path.key, request.body || new Uint8Array(), {
     onlyIf: request.headers,
     httpMetadata: readMetadata(request),
   });
   if (!object) throw new DavError(412, "A request precondition failed.");
+  await usage.commit(object.size - previousSize, 0, 0);
 
   const headers = etagHeaders(object.httpEtag);
   return response(current ? 204 : 201, "", headers);
@@ -255,7 +263,7 @@ async function handleMkcol(request: Request, env: Env, path: DavPath): Promise<R
   return response(201);
 }
 
-async function handleDelete(env: Env, path: DavPath): Promise<Response> {
+async function handleDelete(env: Env, path: DavPath, usage: UsageClient): Promise<Response> {
   if (!path.key) throw new DavError(403, "The root collection cannot be deleted.");
   const resource = await statResource(env.FILES, path);
   if (!resource) throw new DavError(404, "Resource not found.");
@@ -266,8 +274,11 @@ async function handleDelete(env: Env, path: DavPath): Promise<Response> {
     const keys = [...new Set([`${prefix}`, ...objects.map((object) => object.key)])];
     if (keys.length > MAX_TREE_OBJECTS) throw new StorageLimitError();
     await deleteKeys(env.FILES, keys);
+    const releasedSize = objects.reduce((sum, object) => sum + object.size, 0);
+    await usage.release(releasedSize, 0, 0);
   } else {
     await env.FILES.delete(resource.key);
+    await usage.release(resource.size, 0, 0);
   }
   return response(204);
 }
@@ -276,6 +287,7 @@ interface CopyPlan {
   from?: string;
   to: string;
   directory: boolean;
+  size: number;
   metadata?: R2Object;
 }
 
@@ -300,7 +312,9 @@ async function buildCopyPlan(
   destination: DavPath,
   depth: string,
 ): Promise<CopyPlan[]> {
-  if (!source.collection) return [{ from: source.key, to: destination.key, directory: false }];
+  if (!source.collection) {
+    return [{ from: source.key, to: destination.key, directory: false, size: source.size }];
+  }
   if (new TextEncoder().encode(`${destination.key}/`).byteLength > 1024) {
     throw new DavError(414, "Destination collection path is too long.");
   }
@@ -313,6 +327,7 @@ async function buildCopyPlan(
       from: rootMarker ? sourcePrefix : undefined,
       to: destinationPrefix,
       directory: true,
+      size: 0,
       metadata: rootMarker || undefined,
     },
   ];
@@ -327,6 +342,7 @@ async function buildCopyPlan(
       from: object.key,
       to: `${destinationPrefix}${relative}`,
       directory: object.key.endsWith("/"),
+      size: object.size,
       metadata: object,
     });
   }
@@ -361,6 +377,7 @@ async function handleCopyMove(
   env: Env,
   sourcePath: DavPath,
   move: boolean,
+  usage: UsageClient,
 ): Promise<Response> {
   if (!sourcePath.key) throw new DavError(403, "The root collection cannot be copied or moved.");
   const source = await statResource(env.FILES, sourcePath);
@@ -399,17 +416,25 @@ async function handleCopyMove(
 
   const depth = move ? "infinity" : (request.headers.get("depth") || "infinity").toLowerCase();
   const plan = await buildCopyPlan(env, source, destination, depth);
+  const copiedSize = plan.reduce((sum, item) => sum + item.size, 0);
   const oldDestinationKeys = await destinationObjects(env, existing);
   if (!existing?.collection) {
     const destinationFile = await env.FILES.head(destination.key);
     if (destinationFile) oldDestinationKeys.push(destination.key);
   }
+  const replacedSize = existing?.collection
+    ? await estimatePrefixSize(env.FILES, `${destination.key}/`)
+    : existing ? existing.size : 0;
+
+  await usage.reserve(copiedSize, 0, 0);
 
   await applyCopyPlan(env, plan);
 
   const desiredKeys = new Set(plan.map((item) => item.to));
   const staleKeys = oldDestinationKeys.filter((key) => !desiredKeys.has(key));
   if (staleKeys.length) await deleteKeys(env.FILES, staleKeys);
+
+  await usage.commit(copiedSize - replacedSize, 0, 0);
 
   if (move) {
     if (source.collection) {
@@ -421,12 +446,13 @@ async function handleCopyMove(
     } else {
       await env.FILES.delete(source.key);
     }
+    await usage.release(copiedSize, 0, 0);
   }
 
   return response(existing ? 204 : 201);
 }
 
-async function routeMethod(request: Request, env: Env, path: DavPath): Promise<Response> {
+async function routeMethod(request: Request, env: Env, path: DavPath, usage: UsageClient): Promise<Response> {
   switch (request.method) {
     case "OPTIONS":
       return response(200, "", {
@@ -443,15 +469,15 @@ async function routeMethod(request: Request, env: Env, path: DavPath): Promise<R
     case "HEAD":
       return handleHead(env, path);
     case "PUT":
-      return handlePut(request, env, path);
+      return handlePut(request, env, path, usage);
     case "MKCOL":
       return handleMkcol(request, env, path);
     case "DELETE":
-      return handleDelete(env, path);
+      return handleDelete(env, path, usage);
     case "COPY":
-      return handleCopyMove(request, env, path, false);
+      return handleCopyMove(request, env, path, false, usage);
     case "MOVE":
-      return handleCopyMove(request, env, path, true);
+      return handleCopyMove(request, env, path, true, usage);
     default:
       return response(405, "", { allow: ALLOW });
   }
@@ -461,12 +487,14 @@ export async function handleWebDav(
   request: Request,
   env: Env,
   path: DavPath,
+  usage: UsageClient,
 ): Promise<Response> {
   try {
-    return await routeMethod(request, env, path);
+    return await routeMethod(request, env, path, usage);
   } catch (error) {
     if (error instanceof DavError) return failure(error.status, error.message);
     if (error instanceof StorageLimitError) return failure(507, error.message);
+    if (error instanceof QuotaExceededError) return failure(507, error.message);
     console.error(
       JSON.stringify({
         level: "error",

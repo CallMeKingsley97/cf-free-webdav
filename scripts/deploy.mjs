@@ -19,6 +19,8 @@ if (!run(["whoami"], true)) {
 console.log("正在首次部署 Worker 并自动创建 R2 bucket...");
 if (!run(["deploy"])) process.exit(1);
 
+console.log("请确认 wrangler.jsonc 中 R2_BUCKET_NAME 与真实 bucket 名称一致，如有差异请修改后重新部署。");
+
 console.log("请在 Wrangler 提示中输入 WebDAV 密码。");
 if (!run(["secret", "put", "WEBDAV_PASSWORD"])) process.exit(1);
 

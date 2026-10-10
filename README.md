@@ -29,6 +29,31 @@ Set `WEBDAV_PASSWORD` during the button flow if prompted. If the flow does not a
 
 The service returns `503` for WebDAV requests until `WEBDAV_PASSWORD` is configured. The default username is `webdav`; to change it, edit `WEBDAV_USERNAME` in `wrangler.jsonc` and deploy again. Never put the password in `wrangler.jsonc`, this README, or GitHub Actions configuration.
 
+## Free quota circuit breaker
+
+The Worker tracks R2 Class A operations, Class B operations, and an estimated storage total in a Durable Object. When a metric reaches its configured threshold, write operations return `507 Insufficient Storage`; reads and deletes remain available so you can clean up data. Counters reset automatically at the start of each month.
+
+Configure thresholds in `wrangler.jsonc` `vars`:
+
+- `QUOTA_CLASS_A_MAX`: default `1000000`
+- `QUOTA_CLASS_B_MAX`: default `10000000`
+- `QUOTA_STORAGE_MAX_BYTES`: default `10737418240`
+- `QUOTA_THRESHOLD_PERCENT`: default `0.8`, meaning writes stop at 80% of each limit
+- `R2_BUCKET_NAME`: the real R2 bucket name used by official reconciliation; the default matches automatic provisioning (`cf-free-webdav-files`)
+
+`GET /usage` (Basic Auth required) returns the current counters and whether the breaker is open. These are Worker-side estimates; direct R2 console/API access and R2 analytics lag are not included.
+
+## Official usage reconciliation
+
+To improve accuracy, configure a Cloudflare API Token with **Account → Account Analytics → Read** permission, then set these Secrets:
+
+```bash
+npx wrangler secret put CF_ACCOUNT_ID
+npx wrangler secret put CF_API_TOKEN
+```
+
+A scheduled cron job runs every 6 hours and queries the Cloudflare GraphQL Analytics API (`r2OperationsAdaptiveGroups` and `r2StorageAdaptiveGroups`). It compares official usage against local counters and takes the higher value, preventing under-counting when R2 is accessed outside the Worker. Configure `QUOTA_THRESHOLD_PERCENT` in `wrangler.jsonc` (default `0.8`) to control when writes stop.
+
 The Deploy to Cloudflare button requires a public source repository. Your Cloudflare account must have Workers and R2 enabled. If automatic resource provisioning is unavailable for your account or deployment flow, enable R2 in Cloudflare and deploy from a local terminal instead:
 
 ```bash

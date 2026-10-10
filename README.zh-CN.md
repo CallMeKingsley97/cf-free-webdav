@@ -29,6 +29,31 @@
 
 服务在没有密码 Secret 时会对 `/dav/` 返回 `503` 并拒绝访问；设置 Secret 后即可使用。默认用户名为 `webdav`；需要更改时，修改 `wrangler.jsonc` 中的 `WEBDAV_USERNAME` 并重新部署。不要把密码写进 `wrangler.jsonc`、README 或 GitHub Actions 配置。
 
+## 免费额度熔断
+
+Worker 会在 Durable Object 中记录 R2 Class A 操作数、Class B 操作数和存储量估算值。任一指标达到阈值后，写入操作返回 `507 Insufficient Storage`；读取和删除仍可用，便于清理数据。计数每月自动重置。
+
+在 `wrangler.jsonc` 的 `vars` 中配置阈值：
+
+- `QUOTA_CLASS_A_MAX`：默认 `1000000`
+- `QUOTA_CLASS_B_MAX`：默认 `10000000`
+- `QUOTA_STORAGE_MAX_BYTES`：默认 `10737418240`
+- `QUOTA_THRESHOLD_PERCENT`：默认 `0.8`，即达到各上限的 80% 后停止写入
+- `R2_BUCKET_NAME`：官方校准使用的真实 R2 bucket 名称；默认值与自动创建的 `cf-free-webdav-files` 一致
+
+`GET /usage`（需要 Basic Auth）返回当前计数和熔断状态。这些是 Worker 侧估算值；不包含直接使用 R2 控制台/API 的用量，Cloudflare 官方统计也有延迟。可参考下文的官方用量校准提升精度。
+
+## 官方用量校准
+
+为提高精度，可创建一个具有 **Account → Account Analytics → Read** 权限的 Cloudflare API Token，并设置以下 Secret：
+
+```bash
+npx wrangler secret put CF_ACCOUNT_ID
+npx wrangler secret put CF_API_TOKEN
+```
+
+Worker 会通过定时任务（每 6 小时）调用 Cloudflare GraphQL Analytics API（`r2OperationsAdaptiveGroups` 和 `r2StorageAdaptiveGroups`），将官方口径的用量与本地计数对比后取较大值。这样即使有绕过 Worker 的 R2 访问，也不会低估用量。阈值可通过 `wrangler.jsonc` 中的 `QUOTA_THRESHOLD_PERCENT` 配置（默认 `0.8`）。
+
 Deploy to Cloudflare 按钮要求源仓库公开。账号需要启用 Workers 和 R2；若账号或部署流程尚未提供自动创建资源能力，请先在 Cloudflare 中开通 R2，再使用命令行部署。也可从本地终端部署：
 
 ```bash
