@@ -90,6 +90,7 @@ export async function fetchOfficialUsage(
             orderBy: [datetime_DESC]
           ) {
             max { payloadSize }
+            dimensions { datetime }
           }
         }
       }
