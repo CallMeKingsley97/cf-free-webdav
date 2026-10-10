@@ -78,7 +78,7 @@ export default {
         return Response.json({ ok: true, state });
       } catch (error) {
         if (error instanceof QuotaExceededError) return Response.json({ error: error.message }, { status: 503 });
-        throw error;
+        return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 502 });
       }
     }
 
