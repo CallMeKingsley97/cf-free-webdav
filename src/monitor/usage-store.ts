@@ -50,7 +50,7 @@ export class UsageStore {
   private async ensureCurrentMonth(): Promise<UsageState> {
     const now = new Date();
     const month = monthKey(now);
-    const stored = this.state.storage.get<UsageState>(STATE_KEY);
+    const stored = await this.state.storage.get<UsageState>(STATE_KEY);
     if (stored && stored.month === month) return stored;
 
     const fresh = emptyUsageState(now);

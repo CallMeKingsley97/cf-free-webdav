@@ -45,6 +45,12 @@ Worker 会在 Durable Object 中记录 R2 Class A 操作数、Class B 操作数�
 
 ## 官方用量校准
 
+## Web 管理页面
+
+访问 Worker 根路径并输入 WebDAV 用户名和密码，可以浏览目录、下载、上传和删除文件。页面展示 R2 存储与 Class A/B 操作的免费额度、当前用量和使用进度；“同步官方用量”按钮会立即触发一次官方用量校准。
+
+页面通过 `/api/files` 获取目录列表和用量状态，复用同一个 Basic Auth 会话。存储进度按配置的 `QUOTA_STORAGE_MAX_BYTES` 展示，官方校准结果会影响展示值。
+
 为提高精度，可创建一个具有 **Account → Account Analytics → Read** 权限的 Cloudflare API Token，并设置以下 Secret：
 
 ```bash
@@ -115,6 +121,7 @@ npm run dev
 src/
   auth/       Basic Auth 验证
   http/       WebDAV 路径解析与 HTTP/XML 响应
+  web/        Web 管理页面与文件/用量 JSON 接口
   storage/    R2 对象、目录和分页操作
   webdav/     WebDAV 方法路由与处理器
   index.ts    Worker 入口、健康检查和请求鉴权

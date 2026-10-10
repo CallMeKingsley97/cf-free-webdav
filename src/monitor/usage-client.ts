@@ -2,7 +2,11 @@ import type { UsageClient } from "./limited-r2.js";
 import { QuotaExceededError, type UsageState, type UsageSummary } from "./quota.js";
 
 export class DOUsageClient implements UsageClient {
-  constructor(private readonly stub: DurableObjectStub) {}
+  constructor(private readonly namespace: DurableObjectNamespace) {}
+
+  private get stub(): DurableObjectStub {
+    return this.namespace.get(this.namespace.idFromName("usage"));
+  }
 
   async reserve(storageBytes: number, classAOperations: number, classBOperations: number): Promise<void> {
     await this.post("/reserve", storageBytes, classAOperations, classBOperations);

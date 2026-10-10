@@ -81,7 +81,9 @@ function requestSize(request: Request): number | null {
 
 async function requireParentCollection(env: Env, path: DavPath): Promise<void> {
   if (!path.segments.length) throw new DavError(409, "A parent collection is required.");
-  const parent = await statResource(env.FILES, parentPath(path));
+  const bucket = env.FILES;
+  if (!bucket) throw new DavError(503, "R2 bucket is not configured.");
+  const parent = await statResource(bucket, parentPath(path));
   if (!parent || !parent.collection) throw new DavError(409, "The parent collection does not exist.");
 }
 
@@ -123,8 +125,10 @@ async function readSmallBody(request: Request, limit: number): Promise<string> {
 
 async function handlePropfind(request: Request, env: Env, path: DavPath): Promise<Response> {
   const body = await readSmallBody(request, 16_384);
+  const bucket = env.FILES;
+  if (!bucket) throw new DavError(503, "R2 bucket is not configured.");
 
-  const resource = await statResource(env.FILES, path);
+  const resource = await statResource(bucket, path);
   if (!resource) throw new DavError(404, "Resource not found.");
 
   const depth = (request.headers.get("depth") || "1").toLowerCase();
@@ -133,7 +137,7 @@ async function handlePropfind(request: Request, env: Env, path: DavPath): Promis
 
   const entries = [{ path: resourcePath(resource.key, resource.collection), resource }];
   if (depth === "1" && resource.collection) {
-    const children = await listChildren(env.FILES, resource.key);
+    const children = await listChildren(bucket, resource.key);
     entries.push(
       ...children.map((child) => ({
         path: resourcePath(child.key, child.collection),
@@ -151,8 +155,10 @@ async function handlePropfind(request: Request, env: Env, path: DavPath): Promis
 
 async function handleProppatch(request: Request, env: Env, path: DavPath): Promise<Response> {
   const body = await readSmallBody(request, 16_384);
+  const bucket = env.FILES;
+  if (!bucket) throw new DavError(503, "R2 bucket is not configured.");
 
-  const resource = await statResource(env.FILES, path);
+  const resource = await statResource(bucket, path);
   if (!resource) throw new DavError(404, "Resource not found.");
   const properties = proppatchPropertyNames(body);
   if (!properties.length) throw new DavError(400, "Invalid PROPPATCH request body.");
@@ -166,8 +172,10 @@ async function handleProppatch(request: Request, env: Env, path: DavPath): Promi
 
 async function handleGet(request: Request, env: Env, path: DavPath): Promise<Response> {
   if (!path.key || path.collectionHint) throw new DavError(405, "Collections cannot be downloaded.");
+  const bucket = env.FILES;
+  if (!bucket) throw new DavError(503, "R2 bucket is not configured.");
 
-  const object = await env.FILES.get(path.key, {
+  const object = await bucket.get(path.key, {
     onlyIf: request.headers,
     range: request.headers,
   });
@@ -190,13 +198,16 @@ async function handleGet(request: Request, env: Env, path: DavPath): Promise<Res
 
   let status = 200;
   if (object.range) {
-    const suffixLength = object.range.suffix
-      ? Math.min(object.range.suffix, object.size)
+    const range = object.range;
+    const suffixLength = "suffix" in range
+      ? Math.min(range.suffix, object.size)
       : 0;
     const start =
-      object.range.offset ?? (suffixLength ? object.size - suffixLength : 0);
+      "offset" in range && range.offset !== undefined
+        ? range.offset
+        : suffixLength ? object.size - suffixLength : 0;
     const length =
-      object.range.length ?? (suffixLength || object.size - start);
+      "length" in range && range.length !== undefined ? range.length : suffixLength || object.size - start;
     const end = start + length - 1;
     status = 206;
     headers.set("content-range", `bytes ${start}-${end}/${object.size}`);
@@ -210,7 +221,9 @@ async function handleGet(request: Request, env: Env, path: DavPath): Promise<Res
 
 async function handleHead(env: Env, path: DavPath): Promise<Response> {
   if (!path.key || path.collectionHint) throw new DavError(405, "Collections do not have a file body.");
-  const object = await env.FILES.head(path.key);
+  const bucket = env.FILES;
+  if (!bucket) throw new DavError(503, "R2 bucket is not configured.");
+  const object = await bucket.head(path.key);
   if (!object) throw new DavError(404, "Resource not found.");
 
   const headers = new Headers();
@@ -225,15 +238,17 @@ async function handleHead(env: Env, path: DavPath): Promise<Response> {
 
 async function handlePut(request: Request, env: Env, path: DavPath, usage: UsageClient): Promise<Response> {
   if (!path.key || path.collectionHint) throw new DavError(405, "PUT requires a file path.");
+  const bucket = env.FILES;
+  if (!bucket) throw new DavError(503, "R2 bucket is not configured.");
   await requireParentCollection(env, path);
 
-  const current = await statResource(env.FILES, path);
+  const current = await statResource(bucket, path);
   if (current?.collection) throw new DavError(409, "A collection already uses this path.");
   const previousSize = current ? current.size : 0;
   const contentLength = requestSize(request);
   const reservedSize = contentLength === null ? 0 : Math.max(contentLength - previousSize, 0);
   await usage.reserve(reservedSize, 0, 0);
-  const object = await env.FILES.put(path.key, request.body || new Uint8Array(), {
+  const object = await bucket.put(path.key, request.body || new Uint8Array(), {
     onlyIf: request.headers,
     httpMetadata: readMetadata(request),
   });
@@ -251,13 +266,15 @@ async function handleMkcol(request: Request, env: Env, path: DavPath): Promise<R
     throw new DavError(415, "MKCOL request bodies are not supported.");
   }
 
-  const existing = await statResource(env.FILES, path);
-  if (existing || (await env.FILES.head(path.key))) {
+  const bucket = env.FILES;
+  if (!bucket) throw new DavError(503, "R2 bucket is not configured.");
+  const existing = await statResource(bucket, path);
+  if (existing || (await bucket.head(path.key))) {
     throw new DavError(405, "The collection or resource already exists.");
   }
   await requireParentCollection(env, path);
 
-  await env.FILES.put(`${path.key}/`, "", {
+  await bucket.put(`${path.key}/`, "", {
     httpMetadata: { contentType: "httpd/unix-directory" },
   });
   return response(201);
@@ -265,19 +282,21 @@ async function handleMkcol(request: Request, env: Env, path: DavPath): Promise<R
 
 async function handleDelete(env: Env, path: DavPath, usage: UsageClient): Promise<Response> {
   if (!path.key) throw new DavError(403, "The root collection cannot be deleted.");
-  const resource = await statResource(env.FILES, path);
+  const bucket = env.FILES;
+  if (!bucket) throw new DavError(503, "R2 bucket is not configured.");
+  const resource = await statResource(bucket, path);
   if (!resource) throw new DavError(404, "Resource not found.");
 
   if (resource.collection) {
     const prefix = `${resource.key}/`;
-    const objects = await listTree(env.FILES, prefix);
+    const objects = await listTree(bucket, prefix);
     const keys = [...new Set([`${prefix}`, ...objects.map((object) => object.key)])];
     if (keys.length > MAX_TREE_OBJECTS) throw new StorageLimitError();
-    await deleteKeys(env.FILES, keys);
+    await deleteKeys(bucket, keys);
     const releasedSize = objects.reduce((sum, object) => sum + object.size, 0);
     await usage.release(releasedSize, 0, 0);
   } else {
-    await env.FILES.delete(resource.key);
+    await bucket.delete(resource.key);
     await usage.release(resource.size, 0, 0);
   }
   return response(204);
@@ -296,9 +315,11 @@ async function destinationObjects(
   resource: DavResource | null,
 ): Promise<string[]> {
   if (!resource) return [];
+  const bucket = env.FILES;
+  if (!bucket) throw new DavError(503, "R2 bucket is not configured.");
   if (resource.collection) {
     const prefix = `${resource.key}/`;
-    const objects = await listTree(env.FILES, prefix);
+    const objects = await listTree(bucket, prefix);
     const keys = [...new Set([prefix, ...objects.map((object) => object.key)])];
     if (keys.length > MAX_TREE_OBJECTS) throw new StorageLimitError();
     return keys;
@@ -321,7 +342,9 @@ async function buildCopyPlan(
 
   const sourcePrefix = `${source.key}/`;
   const destinationPrefix = `${destination.key}/`;
-  const rootMarker = await env.FILES.head(sourcePrefix);
+  const bucket = env.FILES;
+  if (!bucket) throw new DavError(503, "R2 bucket is not configured.");
+  const rootMarker = await bucket.head(sourcePrefix);
   const plan: CopyPlan[] = [
     {
       from: rootMarker ? sourcePrefix : undefined,
@@ -333,7 +356,7 @@ async function buildCopyPlan(
   ];
   if (depth === "0") return plan;
 
-  const objects = await listTree(env.FILES, sourcePrefix);
+  const objects = await listTree(bucket, sourcePrefix);
   for (const object of objects) {
     if (object.key === sourcePrefix) continue;
     const relative = object.key.slice(sourcePrefix.length);
@@ -351,9 +374,11 @@ async function buildCopyPlan(
 }
 
 async function applyCopyPlan(env: Env, plan: CopyPlan[]): Promise<void> {
+  const bucket = env.FILES;
+  if (!bucket) throw new DavError(503, "R2 bucket is not configured.");
   for (const item of plan) {
     if (item.directory) {
-      await env.FILES.put(
+      await bucket.put(
         item.to,
         "",
         item.metadata
@@ -364,11 +389,11 @@ async function applyCopyPlan(env: Env, plan: CopyPlan[]): Promise<void> {
     }
 
     if (!item.from) throw new DavError(500, "Copy source is missing.");
-    const object = await env.FILES.get(item.from);
+    const object = await bucket.get(item.from);
     if (!object || !("body" in object)) {
       throw new DavError(404, "A source object disappeared during the operation.");
     }
-    await env.FILES.put(item.to, object.body, metadataForPut(object));
+    await bucket.put(item.to, object.body, metadataForPut(object));
   }
 }
 
@@ -380,7 +405,9 @@ async function handleCopyMove(
   usage: UsageClient,
 ): Promise<Response> {
   if (!sourcePath.key) throw new DavError(403, "The root collection cannot be copied or moved.");
-  const source = await statResource(env.FILES, sourcePath);
+  const bucket = env.FILES;
+  if (!bucket) throw new DavError(503, "R2 bucket is not configured.");
+  const source = await statResource(bucket, sourcePath);
   if (!source) throw new DavError(404, "Source resource not found.");
 
   const destination = parseDestination(request);
@@ -408,7 +435,7 @@ async function handleCopyMove(
 
   await requireParentCollection(env, destination);
   const destinationPath = { ...destination, collectionHint: false };
-  const existing = await statResource(env.FILES, destinationPath);
+  const existing = await statResource(bucket, destinationPath);
   if (existing && existing.collection !== source.collection) {
     throw new DavError(409, "Source and destination resource types must match.");
   }
@@ -419,11 +446,11 @@ async function handleCopyMove(
   const copiedSize = plan.reduce((sum, item) => sum + item.size, 0);
   const oldDestinationKeys = await destinationObjects(env, existing);
   if (!existing?.collection) {
-    const destinationFile = await env.FILES.head(destination.key);
+    const destinationFile = await bucket.head(destination.key);
     if (destinationFile) oldDestinationKeys.push(destination.key);
   }
   const replacedSize = existing?.collection
-    ? await estimatePrefixSize(env.FILES, `${destination.key}/`)
+    ? await estimatePrefixSize(bucket, `${destination.key}/`)
     : existing ? existing.size : 0;
 
   await usage.reserve(copiedSize, 0, 0);
@@ -432,7 +459,7 @@ async function handleCopyMove(
 
   const desiredKeys = new Set(plan.map((item) => item.to));
   const staleKeys = oldDestinationKeys.filter((key) => !desiredKeys.has(key));
-  if (staleKeys.length) await deleteKeys(env.FILES, staleKeys);
+  if (staleKeys.length) await deleteKeys(bucket, staleKeys);
 
   await usage.commit(copiedSize - replacedSize, 0, 0);
 
@@ -440,11 +467,11 @@ async function handleCopyMove(
     if (source.collection) {
       const sourcePrefix = `${source.key}/`;
       await deleteKeys(
-        env.FILES,
+        bucket,
         [...new Set([sourcePrefix, ...plan.flatMap((item) => item.from ? [item.from] : [])])],
       );
     } else {
-      await env.FILES.delete(source.key);
+      await bucket.delete(source.key);
     }
     await usage.release(copiedSize, 0, 0);
   }

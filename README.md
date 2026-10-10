@@ -45,6 +45,12 @@ Configure thresholds in `wrangler.jsonc` `vars`:
 
 ## Official usage reconciliation
 
+## Web management page
+
+Open the Worker root URL and sign in with your WebDAV username and password to browse directories, download, upload, and delete files. The page shows R2 storage and Class A/B operation free allowances, current usage, and progress bars. The "Sync official usage" button triggers an immediate official usage reconciliation.
+
+The page calls `/api/files` for directory listings and usage state and reuses the same Basic Auth session. Storage progress follows the configured `QUOTA_STORAGE_MAX_BYTES`; official reconciliation affects the displayed usage.
+
 To improve accuracy, configure a Cloudflare API Token with **Account → Account Analytics → Read** permission, then set these Secrets:
 
 ```bash
@@ -115,6 +121,7 @@ Authentication uses HTTPS Basic Authentication. The R2 bucket remains private an
 src/
   auth/       Basic Authentication
   http/       WebDAV path parsing and HTTP/XML responses
+  web/        Web management page and file/usage JSON API
   storage/    R2 objects, collections, and pagination
   webdav/     WebDAV method routing and handlers
   index.ts    Worker entry point, health check, and request authentication

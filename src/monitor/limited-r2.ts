@@ -1,4 +1,7 @@
+import type { UsageSummary } from "./quota.js";
+
 export interface UsageClient {
+  summary(): Promise<UsageSummary>;
   reserve(storageBytes: number, classAOperations: number, classBOperations: number): Promise<void>;
   commit(storageBytes: number, classAOperations: number, classBOperations: number): Promise<void>;
   release(storageBytes: number, classAOperations: number, classBOperations: number): Promise<void>;
@@ -31,7 +34,7 @@ export class LimitedR2 implements R2Bucket {
     return this.bucket.head(key);
   }
 
-  async put(key: string, value: ArrayBuffer | ArrayBufferView | ReadableStream | string | null, options?: R2PutOptions): Promise<R2Object | null> {
+  async put(key: string, value: ArrayBuffer | ArrayBufferView | ReadableStream | string | null, options?: R2PutOptions): Promise<R2Object> {
     const size = estimateValueSize(value);
     await this.usage.reserve(size, 1, 0);
     const result = await this.bucket.put(key, value, options);
@@ -56,7 +59,7 @@ export class LimitedR2 implements R2Bucket {
     return upload;
   }
 
-  async resumeMultipartUpload(key: string, uploadId: string): Promise<R2MultipartUpload> {
+  resumeMultipartUpload(key: string, uploadId: string): R2MultipartUpload {
     return this.bucket.resumeMultipartUpload(key, uploadId);
   }
 }
