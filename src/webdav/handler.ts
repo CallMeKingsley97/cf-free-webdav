@@ -251,6 +251,7 @@ async function handlePut(request: Request, env: Env, path: DavPath, usage: Usage
   const object = await bucket.put(path.key, request.body || new Uint8Array(), {
     onlyIf: request.headers,
     httpMetadata: readMetadata(request),
+    customMetadata: current ? current.customMetadata : { createdAt: new Date().toISOString() },
   });
   if (!object) throw new DavError(412, "A request precondition failed.");
   await usage.commit(object.size - previousSize, 0, 0);
@@ -276,6 +277,7 @@ async function handleMkcol(request: Request, env: Env, path: DavPath): Promise<R
 
   await bucket.put(`${path.key}/`, "", {
     httpMetadata: { contentType: "httpd/unix-directory" },
+    customMetadata: { createdAt: new Date().toISOString() },
   });
   return response(201);
 }

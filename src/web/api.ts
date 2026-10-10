@@ -9,6 +9,7 @@ interface ApiEntry {
   collection: boolean;
   size: number;
   uploaded: string;
+  createdAt: string | null;
   contentType: string;
   href: string;
 }
@@ -39,6 +40,7 @@ export async function apiFiles(request: Request, env: Env, usage: UsageClient): 
       collection: item.collection,
       size: item.size,
       uploaded: item.uploaded.toISOString(),
+      createdAt: item.createdAt?.toISOString() || null,
       contentType: item.contentType,
       href: fileHref(item.key.split("/"), item.collection),
     }));

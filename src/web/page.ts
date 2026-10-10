@@ -1,15 +1,15 @@
 const style = `
-  :root { color-scheme: light; --line: #dfe5ee; --muted: #667788; --blue: #007aff; --red: #ff3b30; --green: #34c759; }
+  :root { color-scheme: light; --bg: #f5f5f7; --surface: #ffffff; --line: #e5e5ea; --muted: #6e6e73; --text: #1d1d1f; --blue: #007aff; --red: #ff3b30; --green: #34c759; }
   * { box-sizing: border-box; }
-  body { margin: 0; background: #f2f3f5; color: #17212b; font-family: system-ui, -apple-system, sans-serif; }
-  .app { max-width: 1080px; margin: auto; padding: 24px 16px 48px; }
-  .card { background: #fff; border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 5px 20px #0f172608; overflow: hidden; }
-  .header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px 24px; border-bottom: 1px solid var(--line); }
-  h1 { font-size: 20px; margin: 0; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, sans-serif; -webkit-font-smoothing: antialiased; }
+  .app { max-width: 1120px; margin: auto; padding: 32px 20px 56px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 12px 32px rgba(0,0,0,.06); overflow: hidden; }
+  .header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 24px 28px; border-bottom: 1px solid var(--line); }
+  h1 { font-size: 24px; letter-spacing: -.02em; margin: 0; }
   .sub { color: var(--muted); font-size: 13px; }
-  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
-  button, .file label, input, .breadcrumbs a, .breadcrumbs span { border: 1px solid var(--line); border-radius: 8px; background: #fff; color: #17212b; font: inherit; outline: none; }
-  button { padding: 8px 12px; cursor: pointer; white-space: nowrap; transition: .15s; }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+  button, .file label, input, .breadcrumbs a, .breadcrumbs span { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--text); font: inherit; outline: none; }
+  button { min-height: 36px; padding: 0 14px; cursor: pointer; white-space: nowrap; transition: .15s; }
   button:active, .file:active { transform: scale(.97); }
   button:focus-visible, .breadcrumbs a:focus-visible, .file:focus-within { outline: 2px solid var(--blue); outline-offset: 2px; }
   .file input { display: none; }
@@ -17,25 +17,25 @@ const style = `
   button:hover, .file:hover { border-color: #94a3b8; background: #f8fafc; }
   .primary { background: var(--blue) !important; border-color: var(--blue) !important; color: #fff !important; }
   .danger { color: var(--red) !important; }
-  .danger:hover { background: #fef2f2 !important; }
-  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; padding: 20px 24px; border-bottom: 1px solid var(--line); }
-  .quota { border: 1px solid var(--line); border-radius: 12px; padding: 14px; background: #fbfcfe; }
-  .quota h3 { margin: 0 0 6px; font-size: 14px; }
-  .value { font-size: 20px; font-weight: 650; }
+  .danger:hover { background: rgba(255,59,48,.08) !important; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; padding: 24px 28px; border-bottom: 1px solid var(--line); }
+  .quota { border: 1px solid var(--line); border-radius: 14px; padding: 16px; background: #fafafa; }
+  .quota h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--muted); }
+  .value { font-size: 26px; font-weight: 700; letter-spacing: -.02em; }
   .note { color: var(--muted); font-size: 12px; }
-  .bar { height: 9px; background: #e6ebf2; border-radius: 20px; margin: 9px 0 5px; overflow: hidden; }
+  .bar { height: 8px; background: #e5e5ea; border-radius: 20px; margin: 12px 0 8px; overflow: hidden; }
   .fill { height: 100%; background: var(--green); border-radius: 20px; transition: width .25s; }
   .warn { background: #d97706; }
   .dangerfill { background: var(--red); }
-  .toolbar { display: flex; align-items: center; gap: 10px; padding: 14px 24px; border-bottom: 1px solid var(--line); }
-  .breadcrumbs { flex: 1; min-width: 0; overflow: auto; white-space: nowrap; display: flex; gap: 3px; color: var(--muted); }
+  .toolbar { display: flex; align-items: center; gap: 12px; padding: 16px 28px; border-bottom: 1px solid var(--line); }
+  .breadcrumbs { flex: 1; min-width: 0; overflow: auto; white-space: nowrap; display: flex; gap: 4px; color: var(--muted); }
   .breadcrumbs a { padding: 5px 7px; text-decoration: none; }
-  .tablewrap { max-height: 56vh; overflow: auto; }
-  .table { width: 100%; border-collapse: collapse; min-width: 720px; }
-  th, td { padding: 11px 16px; border-bottom: 1px solid #eef2f7; text-align: left; font-size: 14px; }
-  th { position: sticky; top: 0; background: #f8fafc; color: var(--muted); font-size: 12px; white-space: nowrap; z-index: 1; }
+  .tablewrap { max-height: 60vh; overflow: auto; }
+  .table { width: 100%; border-collapse: collapse; min-width: 820px; }
+  th, td { padding: 12px 20px; border-bottom: 1px solid #f2f2f7; text-align: left; font-size: 14px; }
+  th { position: sticky; top: 0; background: #fafafa; color: var(--muted); font-size: 12px; font-weight: 600; white-space: nowrap; z-index: 1; }
   td:last-child, th:last-child { text-align: right; white-space: nowrap; }
-  .row:hover td { background: #fbfdff; }
+  .row:hover td { background: #fafafa; }
   td a { color: var(--blue); text-decoration: none; word-break: break-all; }
   td a:hover { text-decoration: underline; }
   .icon { display: inline-block; width: 16px; height: 16px; vertical-align: -2px; margin-right: 6px; fill: currentColor; }
@@ -112,7 +112,7 @@ const script = `
   }
 
   function renderEntries(entries) {
-    if (!entries.length) { el('rows').innerHTML = '<tr><td colspan="4" class="empty">此目录为空</td></tr>'; return; }
+    if (!entries.length) { el('rows').innerHTML = '<tr><td colspan="5" class="empty">此目录为空</td></tr>'; return; }
     el('rows').innerHTML = entries.map((item) => {
       const key = item.key.split('/').map(encodeURIComponent).join('/');
       const safeHref = attr(item.href);
@@ -121,7 +121,8 @@ const script = `
         ? '<a href="#" data-dir="' + safeKey + '">' + dirIcon + esc(item.name) + '</a>'
         : '<a href="' + safeHref + '" target="_blank" rel="noopener">' + fileIcon + esc(item.name) + '</a>';
       const action = item.collection ? '<button disabled>删除</button>' : '<button class="danger" data-delete="' + safeKey + '">删除</button>';
-      return '<tr><td>' + name + '</td><td>' + (item.collection ? '—' : fmtSize(item.size)) + '</td><td>' + fmtDate(item.uploaded) + '</td><td>' + action + '</td></tr>';
+      return '<tr><td>' + name + '</td><td>' + (item.collection ? '—' : fmtSize(item.size)) + '</td><td>' +
+        (item.createdAt ? fmtDate(item.createdAt) : '—') + '</td><td>' + fmtDate(item.uploaded) + '</td><td>' + action + '</td></tr>';
     }).join('');
   }
 
@@ -212,7 +213,7 @@ export function webPage(nonce: string): string {
       <label class="file"><input id="file" type="file" multiple><span>上传</span></label>
     </div>
     <div class="tablewrap">
-      <table class="table"><thead><tr><th>名称</th><th>大小</th><th>修改时间</th><th>操作</th></tr></thead><tbody id="rows"></tbody></table>
+      <table class="table"><thead><tr><th>名称</th><th>大小</th><th>创建时间</th><th>修改时间</th><th>操作</th></tr></thead><tbody id="rows"></tbody></table>
     </div>
   </section>
 </main>

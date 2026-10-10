@@ -15,6 +15,8 @@ export interface DavResource {
   size: number;
   etag: string;
   uploaded: Date;
+  createdAt: Date | null;
+  customMetadata: Record<string, string>;
   contentType: string;
 }
 
@@ -25,6 +27,8 @@ function fromObject(object: R2Object, key: string, collection = false): DavResou
     size: collection ? 0 : object.size,
     etag: object.httpEtag || `"${object.etag}"`,
     uploaded: object.uploaded,
+    createdAt: parseCreatedAt(object),
+    customMetadata: object.customMetadata || {},
     contentType: collection
       ? "httpd/unix-directory"
       : object.httpMetadata?.contentType || "application/octet-stream",
@@ -38,8 +42,17 @@ function impliedCollection(key: string, marker?: R2Object): DavResource {
     size: 0,
     etag: marker?.httpEtag || `"dir-${encodeURIComponent(key || "root")}"`,
     uploaded: marker?.uploaded || new Date(0),
+    createdAt: marker ? parseCreatedAt(marker) : null,
+    customMetadata: marker?.customMetadata || {},
     contentType: "httpd/unix-directory",
   };
+}
+
+function parseCreatedAt(object: R2Object): Date | null {
+  const value = object.customMetadata?.createdAt;
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 export async function statResource(
