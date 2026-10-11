@@ -10,5 +10,6 @@ interface Env {
   QUOTA_THRESHOLD_PERCENT?: string;
   CF_ACCOUNT_ID?: string;
   CF_API_TOKEN?: string;
+  SHARE_SECRET?: string;
   R2_BUCKET_NAME?: string;
 }

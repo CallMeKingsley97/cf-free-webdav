@@ -92,6 +92,24 @@ const style = `
   #message { position: fixed; z-index: 20; left: 50%; bottom: 22px; max-width: calc(100vw - 32px); padding: 12px 17px; transform: translateX(-50%); border: 1px solid #ffffff20; border-radius: 12px; background: #17243a; color: #fff; font-size: 13px; box-shadow: 0 12px 32px #14233b30; opacity: 0; pointer-events: none; transition: opacity .2s ease; }
   #message.show { opacity: 1; }
   #message.error { background: #b9363e; }
+  .dialog-backdrop { position: fixed; inset: 0; z-index: 30; display: none; place-items: center; padding: 20px; background: #17243a59; backdrop-filter: blur(3px); }
+  .dialog-backdrop.show { display: grid; }
+  .dialog { width: min(420px, 100%); border: 1px solid var(--line); border-radius: 16px; background: var(--surface); box-shadow: 0 18px 48px #14233b2e; padding: 22px; }
+  .dialog h3 { margin: 0 0 4px; font-size: 16px; letter-spacing: -.02em; }
+  .dialog .dialog-sub { margin: 0 0 16px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .ttl-group { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 16px; }
+  .ttl-group label { display: grid; place-items: center; min-height: 38px; border: 1px solid #dbe3ee; border-radius: 10px; background: #fff; color: #26364d; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .ttl-group input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .ttl-group input:checked + span { display: contents; }
+  .ttl-group label:has(input:checked) { border-color: var(--blue); background: #eef4ff; color: var(--blue); }
+  .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; }
+  .share-result { display: none; margin-bottom: 16px; }
+  .share-result.show { display: block; }
+  .share-result textarea { width: 100%; min-height: 74px; padding: 10px 12px; border: 1px solid #dfe6ef; border-radius: 10px; background: #f8fafd; color: var(--text); font: 500 11px ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; }
+  .upload-progress { display: none; align-items: center; gap: 10px; margin: 0 22px 12px; color: #53647d; font-size: 12px; }
+  .upload-progress.show { display: flex; }
+  .upload-progress .bar { flex: 1; height: 6px; margin: 0; }
+  .tablewrap.dragover { outline: 2px dashed #8eaff4; outline-offset: -6px; background: #f4f8ff; }
   .footer-note { margin: 13px 4px 0; color: #8794a6; font-size: 11px; line-height: 1.6; }
   @media (max-width: 900px) { .app { padding: 28px 22px 48px; } .quota { padding: 16px; } .quota-value { font-size: 22px; } .search input { width: 160px; } }
   @media (max-width: 680px) {
@@ -149,6 +167,12 @@ const script = `
   const attr = (value) => esc(value).replace(/"/g, '&quot;');
   const apiPath = (segments) => '/api/files?path=' + encodeURIComponent(segments.join('/'));
   const davPath = (segments) => '/dav/' + segments.map(encodeURIComponent).join('/');
+
+  async function davRequest(segments, method, options = {}) {
+    const response = await fetch(davPath(segments), { method, ...options });
+    if (!response.ok) throw new Error((await response.text()) || '操作失败');
+    return response;
+  }
 
   function fmtSize(value) {
     if (!Number.isFinite(value) || value < 0) return '—';
@@ -221,26 +245,83 @@ const script = `
       const name = item.collection
         ? '<a href="#" data-dir="' + safeKey + '">' + dirIcon + esc(item.name) + '</a>'
         : '<a href="' + safeHref + '" target="_blank" rel="noopener">' + fileIcon + esc(item.name) + '</a>';
-      const action = item.collection ? '<button disabled aria-label="目录暂不支持删除">删除</button>' : '<button data-delete="' + safeKey + '" aria-label="删除 ' + attr(item.name) + '">删除</button>';
+      const shareButton = item.collection ? '' : '<button data-share="' + safeKey + '" aria-label="分享 ' + attr(item.name) + '">分享</button>';
+      const action = '<button data-rename="' + safeKey + '" aria-label="重命名 ' + attr(item.name) + '">重命名</button>' +
+        '<button data-delete="' + safeKey + '" aria-label="删除 ' + attr(item.name) + '">删除</button>' + shareButton;
       return '<tr class="row"><td data-label="名称">' + name + '</td><td data-label="大小">' + (item.collection ? '—' : fmtSize(item.size)) + '</td><td data-label="创建时间">' +
         (item.createdAt ? fmtDate(item.createdAt) : '—') + '</td><td data-label="修改时间">' + fmtDate(item.uploaded) + '</td><td data-label="操作">' + action + '</td></tr>';
     }).join('');
   }
 
   async function upload(file) {
-    const response = await fetch(davPath([...currentPath, file.name]), {
-      method: 'PUT', headers: { 'content-type': file.type || 'application/octet-stream' }, body: file,
+    await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', davPath([...currentPath, file.name]));
+      xhr.setRequestHeader('content-type', file.type || 'application/octet-stream');
+      xhr.upload.onprogress = (event) => {
+        if (!event.lengthComputable) return;
+        const percent = Math.round((event.loaded / event.total) * 100);
+        el('upload-label-text').textContent = '上传中 ' + percent + '%';
+        el('upload-bar').style.width = percent + '%';
+      };
+      xhr.onload = () => xhr.status < 400 ? resolve() : reject(new Error(xhr.responseText || '上传失败'));
+      xhr.onerror = () => reject(new Error('上传失败'));
+      xhr.send(file);
     });
-    if (!response.ok) throw new Error((await response.text()) || '上传失败');
+    el('upload-label-text').textContent = '已上传 ' + file.name;
     notify('已上传：' + file.name);
+  }
+
+  function setUploadProgress(show) {
+    el('upload-progress').className = show ? 'upload-progress show' : 'upload-progress';
+    if (!show) { el('upload-bar').style.width = '0'; el('upload-label-text').textContent = '上传文件'; }
   }
 
   async function remove(key) {
     if (!confirm('确定删除 ' + key.split('/').pop() + ' 吗？')) return false;
-    const response = await fetch(davPath(key.split('/')), { method: 'DELETE' });
-    if (!response.ok) throw new Error('删除失败');
-    notify('文件已删除');
+    await davRequest(key.split('/'), 'DELETE');
+    notify('已删除');
     return true;
+  }
+
+  async function rename(key) {
+    const oldName = key.split('/').pop();
+    const newName = prompt('重命名为：', oldName);
+    if (!newName || newName === oldName) return;
+    if (newName.includes('/') || newName.includes('\\')) { notify('名称不能包含 / 或 \\', true); return; }
+    const segments = key.split('/');
+    const destination = [...currentPath, newName];
+    await davRequest(segments, 'MOVE', { headers: { destination: new URL(davPath(destination), location.origin).href } });
+    notify('已重命名');
+  }
+
+  async function mkdir() {
+    const name = prompt('新建文件夹名称：');
+    if (!name) return;
+    if (name.includes('/') || name.includes('\\')) { notify('名称不能包含 / 或 \\', true); return; }
+    await davRequest([...currentPath, name], 'MKCOL');
+    notify('文件夹已创建');
+  }
+
+  async function share(key) {
+    el('share-file').textContent = key.split('/').pop();
+    el('share-result').className = 'share-result';
+    el('share-url').value = '';
+    el('share-backdrop').classList.add('show');
+    el('share-create').dataset.shareKey = key;
+    const checked = el('share-ttl').querySelector('input:checked');
+    if (checked) checked.checked = false;
+    el('share-ttl').querySelector('input').checked = true;
+  }
+
+  async function createShare(key, ttlHours) {
+    const response = await fetch('/api/share', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: key, ttlHours }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '生成失败');
+    return data.url;
   }
 
   async function loadFiles() {
@@ -273,6 +354,9 @@ const script = `
 
   el('refresh').addEventListener('click', loadFiles);
   el('search').addEventListener('input', () => renderEntries(currentEntries));
+  el('mkdir').addEventListener('click', () => {
+    mkdir().then(loadFiles).catch((error) => notify(error.message || '创建失败', true));
+  });
   el('sync').addEventListener('click', async () => {
     el('sync').disabled = true;
     try {
@@ -288,15 +372,62 @@ const script = `
     const files = [...event.target.files];
     if (!files.length) return;
     el('file').disabled = true;
+    setUploadProgress(true);
     try { for (const file of files) await upload(file); loadFiles(); }
     catch (error) { notify(error.message || '上传失败', true); }
-    finally { el('file').disabled = false; event.target.value = ''; }
+    finally { el('file').disabled = false; setUploadProgress(false); event.target.value = ''; }
   });
   el('rows').addEventListener('click', async (event) => {
     const dir = event.target.closest('[data-dir]');
     const del = event.target.closest('[data-delete]');
+    const ren = event.target.closest('[data-rename]');
+    const shareButton = event.target.closest('[data-share]');
     if (dir) { event.preventDefault(); location.hash = encodeURIComponent(dir.dataset.dir || ''); }
     else if (del) { event.preventDefault(); try { if (await remove(del.dataset.delete)) loadFiles(); } catch (error) { notify(error.message || '删除失败', true); } }
+    else if (ren) { event.preventDefault(); try { await rename(ren.dataset.rename); loadFiles(); } catch (error) { notify(error.message || '重命名失败', true); } }
+    else if (shareButton) { event.preventDefault(); share(shareButton.dataset.share).catch((error) => notify(error.message || '分享失败', true)); }
+  });
+  el('share-ttl').addEventListener('change', () => { el('share-result').className = 'share-result'; });
+  el('share-create').addEventListener('click', async () => {
+    const key = el('share-create').dataset.shareKey;
+    if (!key) return;
+    el('share-create').disabled = true;
+    try {
+      const ttl = Number(el('share-ttl').querySelector('input:checked').value);
+      el('share-url').value = await createShare(key, ttl);
+      el('share-result').className = 'share-result show';
+      el('share-url').select();
+      document.execCommand('copy');
+      notify('链接已生成并复制');
+    } catch (error) { notify(error.message || '生成失败', true); }
+    finally { el('share-create').disabled = false; }
+  });
+  el('share-cancel').addEventListener('click', () => { el('share-backdrop').classList.remove('show'); });
+  el('share-backdrop').addEventListener('click', (event) => {
+    if (event.target === el('share-backdrop')) el('share-backdrop').classList.remove('show');
+  });
+  el('share-copy').addEventListener('click', async () => {
+    await navigator.clipboard.writeText(el('share-url').value);
+    notify('已复制');
+  });
+  const tablewrap = document.querySelector('.tablewrap');
+  ['dragenter', 'dragover'].forEach((type) => tablewrap.addEventListener(type, (event) => {
+    event.preventDefault();
+    tablewrap.classList.add('dragover');
+  }));
+  ['dragleave', 'drop'].forEach((type) => tablewrap.addEventListener(type, (event) => {
+    event.preventDefault();
+    if (type === 'dragleave' && tablewrap.contains(event.relatedTarget)) return;
+    tablewrap.classList.remove('dragover');
+  }));
+  tablewrap.addEventListener('drop', async (event) => {
+    const files = [...(event.dataTransfer ? event.dataTransfer.files : [])];
+    if (!files.length) return;
+    el('file').disabled = true;
+    setUploadProgress(true);
+    try { for (const file of files) await upload(file); loadFiles(); }
+    catch (error) { notify(error.message || '上传失败', true); }
+    finally { el('file').disabled = false; setUploadProgress(false); }
   });
   window.addEventListener('hashchange', initialize);
   initialize();
@@ -325,8 +456,9 @@ export function webPage(nonce: string): string {
     <div class="panel-heading"><div class="panel-title"><h2 id="files-title">文件管理</h2><span id="entry-count">正在加载</span></div><div id="status" class="status loading" role="status" aria-live="polite"><span class="status-dot"></span><span>正在连接</span></div></div>
     <div class="toolbar">
       <nav id="breadcrumbs" class="breadcrumbs" aria-label="目录路径"></nav>
-      <div class="toolbar-tools"><label class="search"><svg viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m16 16 4.5 4.5"/></svg><input id="search" type="search" placeholder="搜索当前目录" aria-label="搜索当前目录"></label><div class="upload"><input id="file" type="file" multiple><label class="upload-label" for="file"><svg viewBox="0 0 24 24"><path d="M12 16V4M7.5 8.5 12 4l4.5 4.5"/><path d="M5 14v5h14v-5"/></svg>上传文件</label></div></div>
+      <div class="toolbar-tools"><label class="search"><svg viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m16 16 4.5 4.5"/></svg><input id="search" type="search" placeholder="搜索当前目录" aria-label="搜索当前目录"></label><button id="mkdir" aria-label="新建文件夹"><svg viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M12 10.5v6M9 13.5h6"/></svg>新建文件夹</button><div class="upload"><input id="file" type="file" multiple><label class="upload-label" for="file"><svg viewBox="0 0 24 24"><path d="M12 16V4M7.5 8.5 12 4l4.5 4.5"/><path d="M5 14v5h14v-5"/></svg><span id="upload-label-text">上传文件</span></label></div></div>
     </div>
+    <div id="upload-progress" class="upload-progress"><span>正在上传</span><div class="bar"><div id="upload-bar" class="fill" style="width:0"></div></div></div>
     <div class="tablewrap">
       <table class="table"><thead><tr><th>名称</th><th>大小</th><th>创建时间</th><th>修改时间</th><th>操作</th></tr></thead><tbody id="rows"><tr><td colspan="5" class="empty-cell">正在加载文件列表…</td></tr></tbody></table>
     </div>
@@ -334,6 +466,26 @@ export function webPage(nonce: string): string {
   <p class="footer-note">用量数据为 Worker 侧统计估算；点击“同步官方用量”可与 Cloudflare 官方数据校准。</p>
 </main>
 <div id="message"></div>
+<div id="share-backdrop" class="dialog-backdrop">
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="share-title">
+    <h3 id="share-title">生成分享链接</h3>
+    <p class="dialog-sub" id="share-file"></p>
+    <div id="share-ttl" class="ttl-group">
+      <label><input type="radio" name="share-ttl" value="1" checked><span>1 小时</span></label>
+      <label><input type="radio" name="share-ttl" value="24"><span>1 天</span></label>
+      <label><input type="radio" name="share-ttl" value="168"><span>7 天</span></label>
+      <label><input type="radio" name="share-ttl" value="720"><span>30 天</span></label>
+    </div>
+    <div id="share-result" class="share-result">
+      <textarea id="share-url" readonly aria-label="分享链接"></textarea>
+    </div>
+    <div class="dialog-actions">
+      <button id="share-copy">复制</button>
+      <button id="share-cancel">关闭</button>
+      <button id="share-create" class="primary">生成链接</button>
+    </div>
+  </div>
+</div>
 <script nonce="${nonce}">${script}</script>
 </body>
 </html>`;

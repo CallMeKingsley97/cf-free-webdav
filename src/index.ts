@@ -1,12 +1,14 @@
 import { isAuthorized } from "./auth/basic.js";
 import { parseDavPath } from "./http/path.js";
-import { LimitedR2 } from "./monitor/limited-r2.js";
+import { LimitedR2, type UsageClient } from "./monitor/limited-r2.js";
 import { QuotaExceededError } from "./monitor/quota.js";
 import { DOUsageClient } from "./monitor/usage-client.js";
 import { UsageStore } from "./monitor/usage-store.js";
+import { verifySharePath } from "./share/link.js";
 import { handleWebDav } from "./webdav/handler.js";
 import { apiFiles } from "./web/api.js";
 import { webPage } from "./web/page.js";
+import { apiShare } from "./web/share-api.js";
 
 export { UsageStore };
 
@@ -21,6 +23,70 @@ function unauthorized(): Response {
   });
 }
 
+function credentialError(message: string): Response {
+  return new Response(message, {
+    status: 503,
+    headers: { "content-type": "text/plain; charset=utf-8" },
+  });
+}
+
+function hasCredentials(env: Env): boolean {
+  return Boolean(env.WEBDAV_PASSWORD);
+}
+
+function shareSecret(env: Env): string {
+  return env.SHARE_SECRET || env.WEBDAV_PASSWORD || "";
+}
+
+async function requireAuthorization(
+  request: Request,
+  env: Env,
+): Promise<Response | null> {
+  if (!hasCredentials(env)) return credentialError("Set the WEBDAV_PASSWORD secret before using WebDAV.");
+  if (!(await isAuthorized(request, env.WEBDAV_USERNAME || "webdav", env.WEBDAV_PASSWORD || ""))) {
+    return unauthorized();
+  }
+  return null;
+}
+
+async function handleShareDownload(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts.length !== 3) {
+    return new Response("Invalid share link.", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+  }
+  const [, rawExpires, rawSignature] = parts;
+  const expires = Number(rawExpires);
+  if (!Number.isSafeInteger(expires) || expires < 0 || rawExpires.length > 15) {
+    return new Response("Invalid share link.", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+  }
+  if (Date.now() > expires * 1000) {
+    return new Response("This share link has expired.", { status: 410, headers: { "content-type": "text/plain; charset=utf-8" } });
+  }
+
+  const davUrl = new URL(request.url);
+  davUrl.pathname = `/dav/${url.searchParams.get("path") || ""}`;
+  const target = parseDavPath(davUrl.pathname);
+  const rawPath = url.searchParams.get("path") || "";
+  if (!target || !target.key || target.collectionHint || rawPath.includes("//")) {
+    return new Response("Invalid share link.", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+  }
+  if (!(await verifySharePath(target.key, expires, rawSignature, shareSecret(env)))) {
+    return new Response("Invalid share link.", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+  }
+
+  return handleWebDav(request, env, target, nullShareUsage());
+}
+
+function nullShareUsage(): UsageClient {
+  return {
+    summary: () => Promise.reject(new Error("Usage is not tracked for shared downloads.")),
+    reserve: () => Promise.resolve(),
+    commit: () => Promise.resolve(),
+    release: () => Promise.resolve(),
+  };
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -28,10 +94,10 @@ export default {
       return Response.json({ status: "ok" });
     }
     if (url.pathname === "/" && request.method === "GET") {
-      if (!env.WEBDAV_PASSWORD) {
-        return new Response("Set the WEBDAV_PASSWORD secret before using WebDAV.", { status: 503 });
+      if (!hasCredentials(env)) {
+        return credentialError("Set the WEBDAV_PASSWORD secret before using WebDAV.");
       }
-      if (!(await isAuthorized(request, env.WEBDAV_USERNAME || "webdav", env.WEBDAV_PASSWORD))) {
+      if (!(await isAuthorized(request, env.WEBDAV_USERNAME || "webdav", env.WEBDAV_PASSWORD || ""))) {
         return unauthorized();
       }
       const nonceBytes = crypto.getRandomValues(new Uint8Array(18));
@@ -46,19 +112,25 @@ export default {
       return new Response(webPage(nonce), { headers });
     }
     if (url.pathname === "/api/files" && request.method === "GET") {
-      if (!env.WEBDAV_PASSWORD) return new Response("Set the WEBDAV_PASSWORD secret before using WebDAV.", { status: 503 });
-      if (!(await isAuthorized(request, env.WEBDAV_USERNAME || "webdav", env.WEBDAV_PASSWORD))) {
-        return unauthorized();
-      }
+      const denied = await requireAuthorization(request, env);
+      if (denied) return denied;
       if (!env.USAGE_STORE) return new Response("Durable Object binding is not configured.", { status: 503 });
       return apiFiles(request, env, new DOUsageClient(env.USAGE_STORE));
     }
+    if (url.pathname === "/api/share" && request.method === "POST") {
+      const denied = await requireAuthorization(request, env);
+      if (denied) return denied;
+      return apiShare(request, env);
+    }
+    if (url.pathname.startsWith("/share/") && request.method === "GET") {
+      if (!hasCredentials(env)) return credentialError("Set the WEBDAV_PASSWORD secret before using WebDAV.");
+      if (!env.FILES) return credentialError("R2 bucket is not configured.");
+      return handleShareDownload(request, env);
+    }
     if (url.pathname === "/usage" && request.method === "GET") {
-      if (!env.WEBDAV_PASSWORD) return new Response("Set the WEBDAV_PASSWORD secret before using WebDAV.", { status: 503 });
+      const denied = await requireAuthorization(request, env);
+      if (denied) return denied;
       if (!env.USAGE_STORE) return new Response("Durable Object binding is not configured.", { status: 503 });
-      if (!(await isAuthorized(request, env.WEBDAV_USERNAME || "webdav", env.WEBDAV_PASSWORD))) {
-        return unauthorized();
-      }
       try {
         const usage = await new DOUsageClient(env.USAGE_STORE).summary();
         return Response.json(usage);
@@ -68,11 +140,9 @@ export default {
       }
     }
     if (url.pathname === "/usage/reconcile-official" && request.method === "POST") {
-      if (!env.WEBDAV_PASSWORD) return new Response("Set the WEBDAV_PASSWORD secret before using WebDAV.", { status: 503 });
+      const denied = await requireAuthorization(request, env);
+      if (denied) return denied;
       if (!env.USAGE_STORE) return new Response("Durable Object binding is not configured.", { status: 503 });
-      if (!(await isAuthorized(request, env.WEBDAV_USERNAME || "webdav", env.WEBDAV_PASSWORD))) {
-        return unauthorized();
-      }
       try {
         const state = await new DOUsageClient(env.USAGE_STORE).reconcileOfficial();
         return Response.json({ ok: true, state });
@@ -84,15 +154,12 @@ export default {
 
     const path = parseDavPath(url.pathname);
     if (!path) return new Response("Not found.", { status: 404 });
-    if (!env.WEBDAV_PASSWORD) {
-      return new Response("Set the WEBDAV_PASSWORD secret before using WebDAV.", {
-        status: 503,
-        headers: { "content-type": "text/plain; charset=utf-8" },
-      });
+    if (!hasCredentials(env)) {
+      return credentialError("Set the WEBDAV_PASSWORD secret before using WebDAV.");
     }
 
     const username = env.WEBDAV_USERNAME || "webdav";
-    if (!(await isAuthorized(request, username, env.WEBDAV_PASSWORD))) return unauthorized();
+    if (!(await isAuthorized(request, username, env.WEBDAV_PASSWORD || ""))) return unauthorized();
     if (!env.FILES || !env.USAGE_STORE) {
       return new Response("R2 bucket or Durable Object binding is not configured.", { status: 503 });
     }

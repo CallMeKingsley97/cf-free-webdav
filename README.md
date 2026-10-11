@@ -47,9 +47,24 @@ Configure thresholds in `wrangler.jsonc` `vars`:
 
 ## Web management page
 
-Open the Worker root URL and sign in with your WebDAV username and password to browse directories, download, upload, and delete files. The page shows R2 storage and Class A/B operation free allowances, current usage, and progress bars. The "Sync official usage" button triggers an immediate official usage reconciliation.
+Open the Worker root URL and sign in with your WebDAV username and password to browse directories, create folders, rename, download, upload, and delete files. The page shows R2 storage and Class A/B operation free allowances, current usage, and progress bars. The "Sync official usage" button triggers an immediate official usage reconciliation. Uploads show live progress, and you can drag files onto the file list to upload them.
 
 The page calls `/api/files` for directory listings and usage state and reuses the same Basic Auth session. Storage progress follows the configured `QUOTA_STORAGE_MAX_BYTES`; official reconciliation affects the displayed usage.
+
+## Share links
+
+The management page can generate signed download links for individual files. A share link works without Basic Auth until it expires and supports HTTP range requests, so media players can stream directly from it.
+
+- Validity periods: 1 hour, 1 day, 7 days, or 30 days.
+- Links are HMAC-SHA256 signed and verified statelessly; no storage is required.
+- Only files can be shared, not collections.
+- By default the signature key falls back to `WEBDAV_PASSWORD`, so changing that secret invalidates all existing links. To decouple share links from the WebDAV password, set an optional `SHARE_SECRET` secret:
+
+```bash
+npx wrangler secret put SHARE_SECRET
+```
+
+## Web management page
 
 To improve accuracy, configure a Cloudflare API Token with **Account → Account Analytics → Read** permission, then set these Secrets:
 
@@ -121,7 +136,8 @@ Authentication uses HTTPS Basic Authentication. The R2 bucket remains private an
 src/
   auth/       Basic Authentication
   http/       WebDAV path parsing and HTTP/XML responses
-  web/        Web management page and file/usage JSON API
+  web/        Web management page and file/usage/share JSON API
+  share/      Signed share link signing and verification
   storage/    R2 objects, collections, and pagination
   webdav/     WebDAV method routing and handlers
   index.ts    Worker entry point, health check, and request authentication

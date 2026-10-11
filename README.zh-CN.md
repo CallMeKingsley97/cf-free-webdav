@@ -47,9 +47,22 @@ Worker 会在 Durable Object 中记录 R2 Class A 操作数、Class B 操作数�
 
 ## Web 管理页面
 
-访问 Worker 根路径并输入 WebDAV 用户名和密码，可以浏览目录、下载、上传和删除文件。页面展示 R2 存储与 Class A/B 操作的免费额度、当前用量和使用进度；“同步官方用量”按钮会立即触发一次官方用量校准。
+访问 Worker 根路径并输入 WebDAV 用户名和密码，可以浏览目录、新建文件夹、重命名、下载、上传和删除文件。页面展示 R2 存储与 Class A/B 操作的免费额度、当前用量和使用进度；“同步官方用量”按钮会立即触发一次官方用量校准。上传时显示实时进度，也可以把文件直接拖拽到文件列表上传。
 
 页面通过 `/api/files` 获取目录列表和用量状态，复用同一个 Basic Auth 会话。存储进度按配置的 `QUOTA_STORAGE_MAX_BYTES` 展示，官方校准结果会影响展示值。
+
+## 分享链接
+
+管理页面可以为单个文件生成签名下载链接。分享链接在过期前无需 Basic Auth 即可访问，并支持 HTTP Range 请求，可直接交给播放器流式播放。
+
+- 有效期可选：1 小时、1 天、7 天或 30 天。
+- 链接使用 HMAC-SHA256 签名，无状态验证，不需要额外存储。
+- 仅支持分享文件，不支持分享目录。
+- 签名密钥默认回退为 `WEBDAV_PASSWORD`，修改该 Secret 会使所有已生成的链接失效。如需与 WebDAV 密码解耦，可设置可选的 `SHARE_SECRET`：
+
+```bash
+npx wrangler secret put SHARE_SECRET
+```
 
 为提高精度，可创建一个具有 **Account → Account Analytics → Read** 权限的 Cloudflare API Token，并设置以下 Secret：
 
@@ -121,7 +134,8 @@ npm run dev
 src/
   auth/       Basic Auth 验证
   http/       WebDAV 路径解析与 HTTP/XML 响应
-  web/        Web 管理页面与文件/用量 JSON 接口
+  web/        Web 管理页面与文件/用量/分享 JSON 接口
+  share/      分享链接的签名与验证
   storage/    R2 对象、目录和分页操作
   webdav/     WebDAV 方法路由与处理器
   index.ts    Worker 入口、健康检查和请求鉴权
