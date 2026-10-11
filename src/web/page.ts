@@ -288,9 +288,8 @@ const script = `
     const oldName = key.split('/').pop();
     const newName = prompt('重命名为：', oldName);
     if (!newName || newName === oldName) return;
-    if (newName.includes('/') || newName.includes('\\')) { notify('名称不能包含 / 或 \\', true); return; }
-    const segments = key.split('/');
-    const destination = [...currentPath, newName];
+    if (newName.includes('/') || newName.includes(String.fromCharCode(92))) { notify('名称不能包含 / 或反斜杠', true); return; }
+    const segments = key.split('/');    const destination = [...currentPath, newName];
     await davRequest(segments, 'MOVE', { headers: { destination: new URL(davPath(destination), location.origin).href } });
     notify('已重命名');
   }
@@ -298,7 +297,7 @@ const script = `
   async function mkdir() {
     const name = prompt('新建文件夹名称：');
     if (!name) return;
-    if (name.includes('/') || name.includes('\\')) { notify('名称不能包含 / 或 \\', true); return; }
+    if (name.includes('/') || name.includes(String.fromCharCode(92))) { notify('名称不能包含 / 或反斜杠', true); return; }
     await davRequest([...currentPath, name], 'MKCOL');
     notify('文件夹已创建');
   }
