@@ -42,9 +42,10 @@ const style = `
   .fill.warn { background: linear-gradient(90deg, #edbd59, #d68d1b); }
   .fill.danger { background: linear-gradient(90deg, #ed7777, #d94343); }
   .spark-wrap { margin: 10px 0 2px; }
-  .spark { display: block; width: 100%; height: 30px; }
+  .spark { display: block; width: 100%; height: 34px; }
   .spark-line { fill: none; stroke: #4b83f4; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
   .spark-area { fill: #4b83f41a; stroke: none; }
+  .spark circle { fill: #2862db; }
   .quota-foot { display: flex; justify-content: space-between; gap: 8px; color: #65758c; font-size: 11px; }
   .quota-foot strong { color: #33445c; font-weight: 650; }
   .panel { overflow: hidden; border: 1px solid var(--line); border-radius: 17px; background: var(--surface); box-shadow: 0 8px 26px #1e3a5f0b; }
@@ -196,16 +197,20 @@ const script = `
   function sparkline(values, maxValue) {
     if (!values.length || !maxValue) return '';
     const width = 120; const height = 28;
-    const step = values.length > 1 ? width / (values.length - 1) : width;
+    const step = values.length > 1 ? width / (values.length - 1) : 0;
     const points = values.map((value, index) => {
-      const x = index * step;
-      const y = height - Math.min(1, value / maxValue) * (height - 2) - 1;
-      return x.toFixed(1) + ',' + y.toFixed(1);
+      const x = values.length > 1 ? index * step : width / 2;
+      const y = height - Math.min(1, value / maxValue) * (height - 5) - 2.5;
+      return { x, y };
     });
-    const line = 'M' + points.join(' L');
-    const area = line + ' L' + width + ',' + height + ' L0,' + height + ' Z';
+    const line = 'M' + points.map((p) => p.x.toFixed(1) + ',' + p.y.toFixed(1)).join(' L');
+    const dots = points
+      .slice(-30)
+      .map((p) => '<circle cx="' + p.x.toFixed(1) + '" cy="' + p.y.toFixed(1) + '" r="2"/>')
+      .join('');
+    const area = values.length > 1 ? '<path class="spark-area" d="' + line + ' L' + width + ',' + height + ' L0,' + height + ' Z"/>' : '';
     return '<svg class="spark" viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="none" aria-hidden="true">' +
-      '<path class="spark-area" d="' + area + '"/><path class="spark-line" d="' + line + '"/></svg>';
+      area + '<path class="spark-line" d="' + line + '"/>' + dots + '</svg>';
   }
 
   async function loadTrend() {
