@@ -11,5 +11,8 @@ interface Env {
   CF_ACCOUNT_ID?: string;
   CF_API_TOKEN?: string;
   SHARE_SECRET?: string;
+  FEISHU_WEBHOOK_URL?: string;
+  FEISHU_WEBHOOK_SECRET?: string;
+  FEISHU_ALERT_PERCENT?: string;
   R2_BUCKET_NAME?: string;
 }

@@ -1,6 +1,14 @@
 import type { UsageClient } from "./limited-r2.js";
 import { QuotaExceededError, type UsageState, type UsageSummary } from "./quota.js";
 
+export interface UsageTrendDay {
+  day: string;
+  classAOperations: number;
+  classBOperations: number;
+  storageBytes: number;
+  blocked: boolean;
+}
+
 export class DOUsageClient implements UsageClient {
   constructor(private readonly namespace: DurableObjectNamespace) {}
 
@@ -34,6 +42,13 @@ export class DOUsageClient implements UsageClient {
     }
     const result = (await response.json()) as { ok: boolean; state: UsageState };
     return result.state;
+  }
+
+  async trend(): Promise<UsageTrendDay[]> {
+    const response = await this.stub.fetch("https://usage/trend", { method: "GET" });
+    if (!response.ok) throw new QuotaExceededError("Usage trend request failed.");
+    const result = (await response.json()) as { days: UsageTrendDay[] };
+    return result.days;
   }
 
   private async post(path: string, storageBytes: number, classAOperations: number, classBOperations: number): Promise<void> {

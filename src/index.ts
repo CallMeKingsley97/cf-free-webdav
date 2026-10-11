@@ -2,7 +2,7 @@ import { isAuthorized } from "./auth/basic.js";
 import { parseDavPath } from "./http/path.js";
 import { LimitedR2, type UsageClient } from "./monitor/limited-r2.js";
 import { QuotaExceededError } from "./monitor/quota.js";
-import { DOUsageClient } from "./monitor/usage-client.js";
+import { DOUsageClient, type UsageTrendDay } from "./monitor/usage-client.js";
 import { UsageStore } from "./monitor/usage-store.js";
 import { verifySharePath } from "./share/link.js";
 import { handleWebDav } from "./webdav/handler.js";
@@ -126,6 +126,18 @@ export default {
       if (!hasCredentials(env)) return credentialError("Set the WEBDAV_PASSWORD secret before using WebDAV.");
       if (!env.FILES) return credentialError("R2 bucket is not configured.");
       return handleShareDownload(request, env);
+    }
+    if (url.pathname === "/api/trend" && request.method === "GET") {
+      const denied = await requireAuthorization(request, env);
+      if (denied) return denied;
+      if (!env.USAGE_STORE) return new Response("Durable Object binding is not configured.", { status: 503 });
+      try {
+        const days: UsageTrendDay[] = await new DOUsageClient(env.USAGE_STORE).trend();
+        return Response.json({ days }, { headers: { "cache-control": "private, no-store" } });
+      } catch (error) {
+        if (error instanceof QuotaExceededError) return Response.json({ error: error.message }, { status: 503 });
+        throw error;
+      }
     }
     if (url.pathname === "/usage" && request.method === "GET") {
       const denied = await requireAuthorization(request, env);

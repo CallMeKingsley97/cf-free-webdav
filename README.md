@@ -45,6 +45,23 @@ Configure thresholds in `wrangler.jsonc` `vars`:
 
 ## Official usage reconciliation
 
+## Usage trend
+
+The Durable Object records a daily usage snapshot (Class A/B operations, storage, breaker state) in its built-in SQLite table. The management page shows a 30-day sparkline under each quota card so you can see how fast allowances are consumed. Snapshots are recorded on every write operation and on official reconciliation, and are kept for 60 days.
+
+## Threshold alerts (Feishu)
+
+To avoid silent write-outs, the Worker can push an alert to a Feishu (Lark) bot webhook when any metric crosses a warning percentage during official reconciliation. Configure these Secrets:
+
+```bash
+npx wrangler secret put FEISHU_WEBHOOK_URL    # Feishu custom bot webhook URL
+npx wrangler secret put FEISHU_WEBHOOK_SECRET # Optional; required only if the bot enables signature verification
+```
+
+- `FEISHU_ALERT_PERCENT` (optional var in `wrangler.jsonc`): alert percentage, default `70`. The breaker itself still trips at `QUOTA_THRESHOLD_PERCENT`.
+- Alerts are sent when scheduled reconciliation (every 6 hours) or a manual "Sync official usage" runs and any metric is at or above the alert percentage.
+- If the bot enables signature verification, set `FEISHU_WEBHOOK_SECRET`; the Worker generates the Feishu signed payload automatically.
+
 ## Web management page
 
 Open the Worker root URL and sign in with your WebDAV username and password to browse directories, create folders, rename, download, upload, and delete files. The page shows R2 storage and Class A/B operation free allowances, current usage, and progress bars. The "Sync official usage" button triggers an immediate official usage reconciliation. Uploads show live progress, and you can drag files onto the file list to upload them.
@@ -138,6 +155,8 @@ src/
   http/       WebDAV path parsing and HTTP/XML responses
   web/        Web management page and file/usage/share JSON API
   share/      Signed share link signing and verification
+  monitor/    Quota tracking, Durable Object usage store, and reconciliation
+  notify/     Feishu threshold alerts
   storage/    R2 objects, collections, and pagination
   webdav/     WebDAV method routing and handlers
   index.ts    Worker entry point, health check, and request authentication

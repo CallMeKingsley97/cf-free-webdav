@@ -5,18 +5,68 @@ import {
   readQuotaConfig,
   storageBlockReason,
   usageSummary,
+  writeBlockReason,
   type UsageState,
   type UsageSummary,
 } from "./quota.js";
 import { fetchOfficialUsage, startOfMonthISO } from "./analytics.js";
+import { notifyThreshold } from "../notify/threshold.js";
 
 const STATE_KEY = "r2-usage-state";
+const SNAPSHOT_RETENTION_DAYS = 60;
 
 export class UsageStore {
+  private tableReady = false;
+
   constructor(
     private readonly state: DurableObjectState,
     private readonly env: Env,
   ) {}
+
+  private ensureTable(): void {
+    if (this.tableReady) return;
+    this.state.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS daily_snapshots (
+        day TEXT PRIMARY KEY,
+        month TEXT NOT NULL,
+        class_a_operations INTEGER NOT NULL,
+        class_b_operations INTEGER NOT NULL,
+        storage_bytes INTEGER NOT NULL,
+        blocked INTEGER NOT NULL
+      )
+    `);
+    this.tableReady = true;
+  }
+
+  private dayKey(date: Date): string {
+    return date.toISOString().slice(0, 10);
+  }
+
+  private async recordSnapshot(state: UsageState): Promise<void> {
+    this.ensureTable();
+    const config = readQuotaConfig(this.env);
+    const blocked = writeBlockReason(state, config) ? 1 : 0;
+    const day = this.dayKey(new Date());
+    this.state.storage.sql.exec(
+      `INSERT INTO daily_snapshots (day, month, class_a_operations, class_b_operations, storage_bytes, blocked)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT (day) DO UPDATE SET
+         month = excluded.month,
+         class_a_operations = excluded.class_a_operations,
+         class_b_operations = excluded.class_b_operations,
+         storage_bytes = excluded.storage_bytes,
+         blocked = excluded.blocked`,
+      day,
+      state.month,
+      Math.trunc(state.classAOperations),
+      Math.trunc(state.classBOperations),
+      Math.trunc(state.storageBytes),
+      blocked,
+    );
+    // 清理超出保留期的旧快照
+    const cutoff = new Date(Date.now() - SNAPSHOT_RETENTION_DAYS * 86_400_000).toISOString().slice(0, 10);
+    this.state.storage.sql.exec(`DELETE FROM daily_snapshots WHERE day < ?`, cutoff);
+  }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -33,6 +83,8 @@ export class UsageStore {
         return this.reconcileOfficial();
       case "/summary":
         return this.summary();
+      case "/trend":
+        return this.trend();
       case "/reset":
         return this.reset();
       default:
@@ -93,6 +145,11 @@ export class UsageStore {
     state.classAOperations += input.classAOperations;
     state.classBOperations += input.classBOperations;
     await this.save(state);
+    try {
+      this.recordSnapshot(state);
+    } catch {
+      console.error(JSON.stringify({ level: "error", event: "snapshot_record_failed" }));
+    }
     return Response.json({ ok: true, state });
   }
 
@@ -138,12 +195,49 @@ export class UsageStore {
     state.reconciledAt = new Date().toISOString();
     await this.save(state);
 
+    this.ctxSafeSideEffects(state);
     return Response.json({ ok: true, state });
+  }
+
+  private ctxSafeSideEffects(state: UsageState): void {
+    try {
+      this.recordSnapshot(state);
+    } catch {
+      console.error(JSON.stringify({ level: "error", event: "snapshot_record_failed" }));
+    }
+    this.state.waitUntil(
+      notifyThreshold(this.env, state, readQuotaConfig(this.env)).catch((error: unknown) => {
+        console.error(JSON.stringify({
+          level: "error",
+          event: "threshold_notify_failed",
+          error: error instanceof Error ? error.message : "unknown",
+        }));
+      }),
+    );
   }
 
   private async summary(): Promise<Response> {
     const state = await this.ensureCurrentMonth();
     return Response.json(usageSummary(state, readQuotaConfig(this.env)));
+  }
+
+  private trend(): Response {
+    this.ensureTable();
+    const rows = this.state.storage.sql
+      .exec<{ day: string; class_a_operations: number; class_b_operations: number; storage_bytes: number; blocked: number }>(
+        `SELECT day, class_a_operations, class_b_operations, storage_bytes, blocked
+         FROM daily_snapshots ORDER BY day ASC LIMIT 90`,
+      )
+      .toArray();
+    return Response.json({
+      days: rows.map((row) => ({
+        day: row.day,
+        classAOperations: row.class_a_operations,
+        classBOperations: row.class_b_operations,
+        storageBytes: row.storage_bytes,
+        blocked: row.blocked !== 0,
+      })),
+    });
   }
 
   private async reset(): Promise<Response> {

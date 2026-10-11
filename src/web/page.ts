@@ -41,6 +41,10 @@ const style = `
   .fill { height: 100%; border-radius: inherit; background: linear-gradient(90deg, #4b83f4, #2862db); transition: width .25s ease; }
   .fill.warn { background: linear-gradient(90deg, #edbd59, #d68d1b); }
   .fill.danger { background: linear-gradient(90deg, #ed7777, #d94343); }
+  .spark-wrap { margin: 10px 0 2px; }
+  .spark { display: block; width: 100%; height: 30px; }
+  .spark-line { fill: none; stroke: #4b83f4; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .spark-area { fill: #4b83f41a; stroke: none; }
   .quota-foot { display: flex; justify-content: space-between; gap: 8px; color: #65758c; font-size: 11px; }
   .quota-foot strong { color: #33445c; font-weight: 650; }
   .panel { overflow: hidden; border: 1px solid var(--line); border-radius: 17px; background: var(--surface); box-shadow: 0 8px 26px #1e3a5f0b; }
@@ -160,6 +164,8 @@ const script = `
   const el = (id) => document.getElementById(id);
   let currentPath = [];
   let currentEntries = [];
+  let trendDays = [];
+  let currentUsage = null;
   const dirIcon = '<svg class="icon" viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M3.5 10h17"/></svg>';
   const fileIcon = '<svg class="icon file-icon" viewBox="0 0 24 24"><path d="M6 3.5h7l5 5v12H6a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2Z"/><path d="M13 3.5v5h5M8 13h8M8 16.5h8"/></svg>';
 
@@ -187,6 +193,31 @@ const script = `
     return new Date(value).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
   }
 
+  function sparkline(values, maxValue) {
+    if (!values.length || !maxValue) return '';
+    const width = 120; const height = 28;
+    const step = values.length > 1 ? width / (values.length - 1) : width;
+    const points = values.map((value, index) => {
+      const x = index * step;
+      const y = height - Math.min(1, value / maxValue) * (height - 2) - 1;
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    });
+    const line = 'M' + points.join(' L');
+    const area = line + ' L' + width + ',' + height + ' L0,' + height + ' Z';
+    return '<svg class="spark" viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="none" aria-hidden="true">' +
+      '<path class="spark-area" d="' + area + '"/><path class="spark-line" d="' + line + '"/></svg>';
+  }
+
+  async function loadTrend() {
+    try {
+      const response = await fetch('/api/trend', { cache: 'no-store' });
+      if (!response.ok) return;
+      const data = await response.json();
+      trendDays = data.days || [];
+      if (currentUsage) renderQuota(currentUsage);
+    } catch { /* 趋势图加载失败不影响主界面 */ }
+  }
+
   function notify(text, error = false) {
     const box = el('message');
     box.textContent = text;
@@ -195,7 +226,7 @@ const script = `
     notify.timer = setTimeout(() => { box.className = ''; }, 3200);
   }
 
-  function quotaCard(title, used, total, unit, icon) {
+  function quotaCard(title, used, total, unit, icon, spark) {
     const ratio = total > 0 ? Math.min(1, used / total) : 0;
     const percent = Math.round(ratio * 100);
     const tone = percent >= 90 ? 'danger' : percent >= 75 ? 'warn' : '';
@@ -205,14 +236,23 @@ const script = `
       '<span class="quota-percent ' + tone + '">' + percent + '% 已用</span></div>' +
       '<div class="quota-value">' + format(used) + '</div><div class="quota-limit">上限 ' + format(total) + '</div>' +
       '<div class="bar"><div class="fill ' + tone + '" style="width:' + percent + '%"></div></div>' +
+      (spark ? '<div class="spark-wrap">' + spark + '</div>' : '') +
       '<div class="quota-foot"><span>当前周期</span><span>剩余 <strong>' + format(remaining) + '</strong></span></div></article>';
   }
 
   function renderQuota(usage) {
+    currentUsage = usage;
     const limits = usage.limits;
-    el('quota').innerHTML = quotaCard('存储空间', usage.state.storageBytes, limits.storageBytes, '字节', '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7.5" ry="3"/><path d="M4.5 5.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6M4.5 11.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6"/></svg>') +
-      quotaCard('A 类操作', usage.state.classAOperations, limits.classAOperations, '次', '<svg viewBox="0 0 24 24"><path d="M12 3v18M17 7.5c0-1.7-2-3-5-3S7 6 7 8s1.7 3 5 4 5 2.3 5 4-2 3.5-5 3.5-5-1.4-5-3.5"/></svg>') +
-      quotaCard('B 类操作', usage.state.classBOperations, limits.classBOperations, '次', '<svg viewBox="0 0 24 24"><path d="M4 18V6M4 18h16M8 15l3-4 3 2 5-7"/><path d="M16 6h3v3"/></svg>');
+    const trendFor = (pick) => {
+      const days = trendDays.slice(-30);
+      return { values: days.map(pick), max: limits };
+    };
+    const storageTrend = trendFor((day) => day.storageBytes);
+    const classATrend = trendFor((day) => day.classAOperations);
+    const classBTrend = trendFor((day) => day.classBOperations);
+    el('quota').innerHTML = quotaCard('存储空间', usage.state.storageBytes, limits.storageBytes, '字节', '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7.5" ry="3"/><path d="M4.5 5.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6M4.5 11.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6"/></svg>', sparkline(storageTrend.values, limits.storageBytes)) +
+      quotaCard('A 类操作', usage.state.classAOperations, limits.classAOperations, '次', '<svg viewBox="0 0 24 24"><path d="M12 3v18M17 7.5c0-1.7-2-3-5-3S7 6 7 8s1.7 3 5 4 5 2.3 5 4-2 3.5-5 3.5-5-1.4-5-3.5"/></svg>', sparkline(classATrend.values, limits.classAOperations)) +
+      quotaCard('B 类操作', usage.state.classBOperations, limits.classBOperations, '次', '<svg viewBox="0 0 24 24"><path d="M4 18V6M4 18h16M8 15l3-4 3 2 5-7"/><path d="M16 6h3v3"/></svg>', sparkline(classBTrend.values, limits.classBOperations));
     document.title = usage.blocked ? 'CF Free WebDAV - 熔断' : 'CF Free WebDAV';
   }
 
@@ -338,6 +378,7 @@ const script = `
       renderBreadcrumbs(data.path || []);
       status.className = 'status';
       status.lastChild.textContent = '存储服务正常';
+      loadTrend();
     } catch (error) {
       notify(error.message || '加载失败', true);
       status.className = 'status error';

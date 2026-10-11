@@ -45,6 +45,23 @@ Worker 会在 Durable Object 中记录 R2 Class A 操作数、Class B 操作数�
 
 ## 官方用量校准
 
+## 用量趋势
+
+Durable Object 会在内置 SQLite 表中按天记录用量快照（A/B 类操作、存储、熔断状态）。管理页面的每张额度卡片下方会展示最近 30 天的迷你趋势图，方便看出额度消耗速度。快照在每次写操作和官方校准时记录，保留 60 天。
+
+## 熔断预警（飞书）
+
+为避免写入悄悄被熔断，官方校准时若任一指标超过预警百分比，Worker 会推送到飞书自定义机器人 webhook。配置以下 Secret：
+
+```bash
+npx wrangler secret put FEISHU_WEBHOOK_URL     # 飞书自定义机器人 webhook 地址
+npx wrangler secret put FEISHU_WEBHOOK_SECRET  # 可选；仅当机器人开启签名校验时需要
+```
+
+- `FEISHU_ALERT_PERCENT`（`wrangler.jsonc` 可选变量）：预警百分比，默认 `70`。熔断本身仍按 `QUOTA_THRESHOLD_PERCENT` 触发。
+- 定时校准（每 6 小时）或手动点击“同步官方用量”时，若任一指标达到预警百分比即发送通知。
+- 机器人若开启签名校验，设置 `FEISHU_WEBHOOK_SECRET` 即可，Worker 会自动生成飞书签名。
+
 ## Web 管理页面
 
 访问 Worker 根路径并输入 WebDAV 用户名和密码，可以浏览目录、新建文件夹、重命名、下载、上传和删除文件。页面展示 R2 存储与 Class A/B 操作的免费额度、当前用量和使用进度；“同步官方用量”按钮会立即触发一次官方用量校准。上传时显示实时进度，也可以把文件直接拖拽到文件列表上传。
@@ -136,6 +153,8 @@ src/
   http/       WebDAV 路径解析与 HTTP/XML 响应
   web/        Web 管理页面与文件/用量/分享 JSON 接口
   share/      分享链接的签名与验证
+  monitor/    配额统计、Durable Object 用量存储与官方校准
+  notify/     飞书阈值预警通知
   storage/    R2 对象、目录和分页操作
   webdav/     WebDAV 方法路由与处理器
   index.ts    Worker 入口、健康检查和请求鉴权
