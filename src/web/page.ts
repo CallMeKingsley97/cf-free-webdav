@@ -231,18 +231,26 @@ const script = `
     notify.timer = setTimeout(() => { box.className = ''; }, 3200);
   }
 
+  function daysUntilReset() {
+    const now = new Date();
+    const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
+    return Math.max(1, Math.ceil((next - now.getTime()) / 86400000));
+  }
+
   function quotaCard(title, used, total, unit, icon, spark) {
     const ratio = total > 0 ? Math.min(1, used / total) : 0;
     const percent = Math.round(ratio * 100);
     const tone = percent >= 90 ? 'danger' : percent >= 75 ? 'warn' : '';
     const format = unit === '字节' ? fmtSize : (value) => value.toLocaleString('zh-CN');
     const remaining = Math.max(0, total - used);
+    const days = daysUntilReset();
+    const resetLabel = days === 1 ? '明天' : days + ' 天后';
     return '<article class="quota"><div class="quota-top"><div class="quota-label"><span class="quota-icon">' + icon + '</span>' + title + '</div>' +
       '<span class="quota-percent ' + tone + '">' + percent + '% 已用</span></div>' +
       '<div class="quota-value">' + format(used) + '</div><div class="quota-limit">上限 ' + format(total) + '</div>' +
       '<div class="bar"><div class="fill ' + tone + '" style="width:' + percent + '%"></div></div>' +
       (spark ? '<div class="spark-wrap">' + spark + '</div>' : '') +
-      '<div class="quota-foot"><span>当前周期</span><span>剩余 <strong>' + format(remaining) + '</strong></span></div></article>';
+      '<div class="quota-foot"><span>' + resetLabel + '重置</span><span>剩余 <strong>' + format(remaining) + '</strong></span></div></article>';
   }
 
   function renderQuota(usage) {
