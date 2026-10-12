@@ -163,6 +163,11 @@ scripts/
   deploy.mjs  首次部署、交互设置密码、再次发布
 ```
 
+## 友情链接
+
+- [LINUX DO](https://linux.do/) — 真实、友好的技术社区，分享与讨论技术和数字生活。
+- [V2EX](https://www.v2ex.com/) — 创意工作者与开发者的社区。
+
 ## 开源
 
 本项目使用 MIT License。Cloudflare 的部署按钮要求源仓库公开；如果将本项目设为私有，请改用本地 Wrangler 命令部署。

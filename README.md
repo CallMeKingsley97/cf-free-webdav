@@ -165,6 +165,11 @@ scripts/
   deploy.mjs  First deployment, interactive password setup, and redeployment
 ```
 
+## Friendly Links
+
+- [LINUX DO](https://linux.do/) — A community for sharing and discussing technology, software, and digital life.
+- [V2EX](https://www.v2ex.com/) — A community of developers and creative minds.
+
 ## License
 
 This project is licensed under the MIT License. The Deploy to Cloudflare button requires a public source repository. If you make this repository private, deploy with Wrangler from a local terminal instead.
