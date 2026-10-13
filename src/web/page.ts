@@ -41,12 +41,8 @@ const style = `
   .fill { height: 100%; border-radius: inherit; background: linear-gradient(90deg, #4b83f4, #2862db); transition: width .25s ease; }
   .fill.warn { background: linear-gradient(90deg, #edbd59, #d68d1b); }
   .fill.danger { background: linear-gradient(90deg, #ed7777, #d94343); }
-  .spark-wrap { margin: 10px 0 2px; }
-  .spark { display: block; width: 100%; height: 34px; }
-  .spark-line { fill: none; stroke: #4b83f4; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-  .spark-flat { stroke-dasharray: 2 3; opacity: 0.5; }
-  .spark-area { fill: #4b83f41a; stroke: none; }
-  .spark circle { fill: #2862db; }
+  .quota-trend { display: flex; justify-content: space-between; gap: 8px; margin: 12px 0 2px; color: #65758c; font-size: 11px; }
+  .quota-trend strong { color: #33445c; font-weight: 650; font-variant-numeric: tabular-nums; }
   .quota-foot { display: flex; justify-content: space-between; gap: 8px; color: #65758c; font-size: 11px; }
   .quota-foot strong { color: #33445c; font-weight: 650; }
   .panel { overflow: hidden; border: 1px solid var(--line); border-radius: 17px; background: var(--surface); box-shadow: 0 8px 26px #1e3a5f0b; }
@@ -195,29 +191,20 @@ const script = `
     return new Date(value).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
   }
 
-  function sparkline(values) {
-    if (!values.length) return '';
-    const width = 120; const height = 28;
-    const dataMax = Math.max.apply(null, values);
-    if (!dataMax) {
-      const base = (height - 2.5).toFixed(1);
-      return '<svg class="spark" viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="none" aria-hidden="true">' +
-        '<path class="spark-line spark-flat" d="M0,' + base + ' L' + width + ',' + base + '"/></svg>';
-    }
-    // 按数据峰值自适应量程，而不是额度上限：日用量远小于总额度时也能看出坡度
-    const points = values.map((value, index) => {
-      const x = values.length > 1 ? index * (width / (values.length - 1)) : width / 2;
-      const y = height - (value / dataMax) * (height - 5) - 2.5;
-      return { x, y };
-    });
-    const line = 'M' + points.map((p) => p.x.toFixed(1) + ',' + p.y.toFixed(1)).join(' L');
-    const dots = points
-      .slice(-30)
-      .map((p) => '<circle cx="' + p.x.toFixed(1) + '" cy="' + p.y.toFixed(1) + '" r="2"/>')
-      .join('');
-    const area = values.length > 1 ? '<path class="spark-area" d="' + line + ' L' + width + ',' + height + ' L0,' + height + ' Z"/>' : '';
-    return '<svg class="spark" viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="none" aria-hidden="true">' +
-      area + '<path class="spark-line" d="' + line + '"/>' + dots + '</svg>';
+  function signed(value, format) {
+    const symbol = value > 0 ? '+' : value < 0 ? '−' : '±';
+    return symbol + format(Math.abs(value));
+  }
+
+  // 额度卡片趋势行：今日增量 + 近 7 日日均，替代低用量下没有信息量的折线图
+  function trendRow(days, pick, format) {
+    if (days.length < 2) return '';
+    const last = pick(days[days.length - 1]) - pick(days[days.length - 2]);
+    const span = Math.min(7, days.length - 1);
+    let sum = 0;
+    for (let i = days.length - span; i < days.length; i++) sum += pick(days[i]) - pick(days[i - 1]);
+    return '<div class="quota-trend"><span>今日 <strong>' + signed(last, format) + '</strong></span>' +
+      '<span>近 7 日日均 <strong>' + signed(sum / span, format) + '</strong></span></div>';
   }
 
   async function loadTrend() {
@@ -244,7 +231,7 @@ const script = `
     return Math.max(1, Math.ceil((next - now.getTime()) / 86400000));
   }
 
-  function quotaCard(title, used, total, unit, icon, spark) {
+  function quotaCard(title, used, total, unit, icon, trend) {
     const ratio = total > 0 ? Math.min(1, used / total) : 0;
     const percent = Math.round(ratio * 100);
     const tone = percent >= 90 ? 'danger' : percent >= 75 ? 'warn' : '';
@@ -256,23 +243,18 @@ const script = `
       '<span class="quota-percent ' + tone + '">' + percent + '% 已用</span></div>' +
       '<div class="quota-value">' + format(used) + '</div><div class="quota-limit">上限 ' + format(total) + '</div>' +
       '<div class="bar"><div class="fill ' + tone + '" style="width:' + percent + '%"></div></div>' +
-      (spark ? '<div class="spark-wrap">' + spark + '</div>' : '') +
+      (trend || '') +
       '<div class="quota-foot"><span>' + resetLabel + '重置</span><span>剩余 <strong>' + format(remaining) + '</strong></span></div></article>';
   }
 
   function renderQuota(usage) {
     currentUsage = usage;
     const limits = usage.limits;
-    const trendFor = (pick) => {
-      const days = trendDays.slice(-30);
-      return { values: days.map(pick), max: limits };
-    };
-    const storageTrend = trendFor((day) => day.storageBytes);
-    const classATrend = trendFor((day) => day.classAOperations);
-    const classBTrend = trendFor((day) => day.classBOperations);
-    el('quota').innerHTML = quotaCard('存储空间', usage.state.storageBytes, limits.storageBytes, '字节', '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7.5" ry="3"/><path d="M4.5 5.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6M4.5 11.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6"/></svg>', sparkline(storageTrend.values)) +
-      quotaCard('A 类操作', usage.state.classAOperations, limits.classAOperations, '次', '<svg viewBox="0 0 24 24"><path d="M12 3v18M17 7.5c0-1.7-2-3-5-3S7 6 7 8s1.7 3 5 4 5 2.3 5 4-2 3.5-5 3.5-5-1.4-5-3.5"/></svg>', sparkline(classATrend.values)) +
-      quotaCard('B 类操作', usage.state.classBOperations, limits.classBOperations, '次', '<svg viewBox="0 0 24 24"><path d="M4 18V6M4 18h16M8 15l3-4 3 2 5-7"/><path d="M16 6h3v3"/></svg>', sparkline(classBTrend.values));
+    const days = trendDays.slice(-31);
+    const trendFor = (pick, format) => trendRow(days, pick, format);
+    el('quota').innerHTML = quotaCard('存储空间', usage.state.storageBytes, limits.storageBytes, '字节', '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7.5" ry="3"/><path d="M4.5 5.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6M4.5 11.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6"/></svg>', trendFor((day) => day.storageBytes, fmtSize)) +
+      quotaCard('A 类操作', usage.state.classAOperations, limits.classAOperations, '次', '<svg viewBox="0 0 24 24"><path d="M12 3v18M17 7.5c0-1.7-2-3-5-3S7 6 7 8s1.7 3 5 4 5 2.3 5 4-2 3.5-5 3.5-5-1.4-5-3.5"/></svg>', trendFor((day) => day.classAOperations, (value) => Math.round(value).toLocaleString('zh-CN'))) +
+      quotaCard('B 类操作', usage.state.classBOperations, limits.classBOperations, '次', '<svg viewBox="0 0 24 24"><path d="M4 18V6M4 18h16M8 15l3-4 3 2 5-7"/><path d="M16 6h3v3"/></svg>', trendFor((day) => day.classBOperations, (value) => Math.round(value).toLocaleString('zh-CN')));
     document.title = usage.blocked ? 'CF Free WebDAV - 熔断' : 'CF Free WebDAV';
   }
 
