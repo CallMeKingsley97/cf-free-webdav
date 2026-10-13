@@ -44,6 +44,7 @@ const style = `
   .spark-wrap { margin: 10px 0 2px; }
   .spark { display: block; width: 100%; height: 34px; }
   .spark-line { fill: none; stroke: #4b83f4; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .spark-flat { stroke-dasharray: 2 3; opacity: 0.5; }
   .spark-area { fill: #4b83f41a; stroke: none; }
   .spark circle { fill: #2862db; }
   .quota-foot { display: flex; justify-content: space-between; gap: 8px; color: #65758c; font-size: 11px; }
@@ -194,13 +195,19 @@ const script = `
     return new Date(value).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
   }
 
-  function sparkline(values, maxValue) {
-    if (!values.length || !maxValue) return '';
+  function sparkline(values) {
+    if (!values.length) return '';
     const width = 120; const height = 28;
-    const step = values.length > 1 ? width / (values.length - 1) : 0;
+    const dataMax = Math.max.apply(null, values);
+    if (!dataMax) {
+      const base = (height - 2.5).toFixed(1);
+      return '<svg class="spark" viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="none" aria-hidden="true">' +
+        '<path class="spark-line spark-flat" d="M0,' + base + ' L' + width + ',' + base + '"/></svg>';
+    }
+    // 按数据峰值自适应量程，而不是额度上限：日用量远小于总额度时也能看出坡度
     const points = values.map((value, index) => {
-      const x = values.length > 1 ? index * step : width / 2;
-      const y = height - Math.min(1, value / maxValue) * (height - 5) - 2.5;
+      const x = values.length > 1 ? index * (width / (values.length - 1)) : width / 2;
+      const y = height - (value / dataMax) * (height - 5) - 2.5;
       return { x, y };
     });
     const line = 'M' + points.map((p) => p.x.toFixed(1) + ',' + p.y.toFixed(1)).join(' L');
@@ -263,9 +270,9 @@ const script = `
     const storageTrend = trendFor((day) => day.storageBytes);
     const classATrend = trendFor((day) => day.classAOperations);
     const classBTrend = trendFor((day) => day.classBOperations);
-    el('quota').innerHTML = quotaCard('存储空间', usage.state.storageBytes, limits.storageBytes, '字节', '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7.5" ry="3"/><path d="M4.5 5.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6M4.5 11.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6"/></svg>', sparkline(storageTrend.values, limits.storageBytes)) +
-      quotaCard('A 类操作', usage.state.classAOperations, limits.classAOperations, '次', '<svg viewBox="0 0 24 24"><path d="M12 3v18M17 7.5c0-1.7-2-3-5-3S7 6 7 8s1.7 3 5 4 5 2.3 5 4-2 3.5-5 3.5-5-1.4-5-3.5"/></svg>', sparkline(classATrend.values, limits.classAOperations)) +
-      quotaCard('B 类操作', usage.state.classBOperations, limits.classBOperations, '次', '<svg viewBox="0 0 24 24"><path d="M4 18V6M4 18h16M8 15l3-4 3 2 5-7"/><path d="M16 6h3v3"/></svg>', sparkline(classBTrend.values, limits.classBOperations));
+    el('quota').innerHTML = quotaCard('存储空间', usage.state.storageBytes, limits.storageBytes, '字节', '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7.5" ry="3"/><path d="M4.5 5.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6M4.5 11.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6"/></svg>', sparkline(storageTrend.values)) +
+      quotaCard('A 类操作', usage.state.classAOperations, limits.classAOperations, '次', '<svg viewBox="0 0 24 24"><path d="M12 3v18M17 7.5c0-1.7-2-3-5-3S7 6 7 8s1.7 3 5 4 5 2.3 5 4-2 3.5-5 3.5-5-1.4-5-3.5"/></svg>', sparkline(classATrend.values)) +
+      quotaCard('B 类操作', usage.state.classBOperations, limits.classBOperations, '次', '<svg viewBox="0 0 24 24"><path d="M4 18V6M4 18h16M8 15l3-4 3 2 5-7"/><path d="M16 6h3v3"/></svg>', sparkline(classBTrend.values));
     document.title = usage.blocked ? 'CF Free WebDAV - 熔断' : 'CF Free WebDAV';
   }
 
