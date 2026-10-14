@@ -15,7 +15,7 @@ import {
   StorageLimitError,
   type DavResource,
 } from "../storage/r2.js";
-import { estimatePrefixSize } from "../storage/size.js";
+import { planTrashEntry, removeTrashItem, writeTrashPlan } from "../storage/trash.js";
 import type { UsageClient } from "../monitor/limited-r2.js";
 import { QuotaExceededError } from "../monitor/quota.js";
 
@@ -25,6 +25,12 @@ const XML_HEADERS = {
   "cache-control": "private, no-store",
   dav: "1",
 };
+const UNKNOWN_PUT_MAX_BYTES = 100 * 1024 * 1024;
+
+function trashRetentionDays(env: Env): number {
+  const value = Number(env.TRASH_RETENTION_DAYS);
+  return Number.isInteger(value) && value >= 1 && value <= 365 ? value : 30;
+}
 
 class DavError extends Error {
   constructor(
@@ -177,7 +183,7 @@ async function handleGet(request: Request, env: Env, path: DavPath): Promise<Res
 
   const object = await bucket.get(path.key, {
     onlyIf: request.headers,
-    range: request.headers,
+    ...(request.headers.has("range") ? { range: request.headers } : {}),
   });
   if (!object) throw new DavError(404, "Resource not found.");
   if (!("body" in object)) {
@@ -244,17 +250,36 @@ async function handlePut(request: Request, env: Env, path: DavPath, usage: Usage
 
   const current = await statResource(bucket, path);
   if (current?.collection) throw new DavError(409, "A collection already uses this path.");
-  const previousSize = current ? current.size : 0;
+  const versionPlan = current
+    ? await planTrashEntry(bucket, current, "version", trashRetentionDays(env))
+    : null;
   const contentLength = requestSize(request);
-  const reservedSize = contentLength === null ? 0 : Math.max(contentLength - previousSize, 0);
-  await usage.reserve(reservedSize, 0, 0);
-  const object = await bucket.put(path.key, request.body || new Uint8Array(), {
-    onlyIf: request.headers,
-    httpMetadata: readMetadata(request),
-    customMetadata: current ? current.customMetadata : { createdAt: new Date().toISOString() },
-  });
-  if (!object) throw new DavError(412, "A request precondition failed.");
-  await usage.commit(object.size - previousSize, 0, 0);
+  const reservedSize = (contentLength ?? (request.body ? UNKNOWN_PUT_MAX_BYTES : 0)) + (versionPlan?.manifestBytes || 0);
+  const reservationId = await usage.reserve(reservedSize, 0, 0);
+  let archived = false;
+  let putSucceeded = false;
+  let object: R2Object;
+  try {
+    if (versionPlan) {
+      await writeTrashPlan(bucket, versionPlan);
+      archived = true;
+    }
+    const result = await bucket.put(path.key, request.body || new Uint8Array(), {
+      onlyIf: request.headers,
+      httpMetadata: readMetadata(request),
+      customMetadata: current ? current.customMetadata : { createdAt: new Date().toISOString() },
+    });
+    if (!result) throw new DavError(412, "A request precondition failed.");
+    object = result;
+    putSucceeded = true;
+    await usage.commit(object.size + (versionPlan?.manifestBytes || 0), 0, 0, reservationId);
+  } catch (error) {
+    if (archived && !putSucceeded && versionPlan) {
+      await removeTrashItem(bucket, { ...versionPlan.manifest, manifestBytes: versionPlan.manifestBytes }).catch(() => undefined);
+    }
+    if (!putSucceeded) await usage.cancel(reservationId);
+    throw error;
+  }
 
   const headers = etagHeaders(object.httpEtag);
   return response(current ? 204 : 201, "", headers);
@@ -289,17 +314,24 @@ async function handleDelete(env: Env, path: DavPath, usage: UsageClient): Promis
   const resource = await statResource(bucket, path);
   if (!resource) throw new DavError(404, "Resource not found.");
 
-  if (resource.collection) {
-    const prefix = `${resource.key}/`;
-    const objects = await listTree(bucket, prefix);
-    const keys = [...new Set([`${prefix}`, ...objects.map((object) => object.key)])];
-    if (keys.length > MAX_TREE_OBJECTS) throw new StorageLimitError();
-    await deleteKeys(bucket, keys);
-    const releasedSize = objects.reduce((sum, object) => sum + object.size, 0);
-    await usage.release(releasedSize, 0, 0);
-  } else {
-    await bucket.delete(resource.key);
-    await usage.release(resource.size, 0, 0);
+  const plan = await planTrashEntry(bucket, resource, "deleted", trashRetentionDays(env));
+  const reservationId = await usage.reserve(0, 0, 0);
+  let archived = false;
+  let sourceDeleted = false;
+  try {
+    await writeTrashPlan(bucket, plan);
+    archived = true;
+    await deleteKeys(bucket, plan.sourceKeys);
+    sourceDeleted = true;
+    await usage.commit(plan.manifestBytes, 0, 0, reservationId);
+  } catch (error) {
+    if (archived) {
+      const additionalBytes = plan.manifestBytes + (sourceDeleted ? 0 : plan.manifest.byteSize);
+      await usage.commit(additionalBytes, 0, 0, reservationId).catch(() => undefined);
+    } else {
+      await usage.cancel(reservationId);
+    }
+    throw error;
   }
   return response(204);
 }
@@ -451,31 +483,55 @@ async function handleCopyMove(
     const destinationFile = await bucket.head(destination.key);
     if (destinationFile) oldDestinationKeys.push(destination.key);
   }
-  const replacedSize = existing?.collection
-    ? await estimatePrefixSize(bucket, `${destination.key}/`)
-    : existing ? existing.size : 0;
-
-  await usage.reserve(copiedSize, 0, 0);
-
-  await applyCopyPlan(env, plan);
-
-  const desiredKeys = new Set(plan.map((item) => item.to));
-  const staleKeys = oldDestinationKeys.filter((key) => !desiredKeys.has(key));
-  if (staleKeys.length) await deleteKeys(bucket, staleKeys);
-
-  await usage.commit(copiedSize - replacedSize, 0, 0);
-
-  if (move) {
-    if (source.collection) {
-      const sourcePrefix = `${source.key}/`;
-      await deleteKeys(
-        bucket,
-        [...new Set([sourcePrefix, ...plan.flatMap((item) => item.from ? [item.from] : [])])],
-      );
-    } else {
-      await bucket.delete(source.key);
+  const versionPlan = existing
+    ? await planTrashEntry(bucket, existing, "version", trashRetentionDays(env))
+    : null;
+  const storageDelta = move
+    ? versionPlan?.manifestBytes || 0
+    : copiedSize + (versionPlan?.manifestBytes || 0);
+  const reservationId = await usage.reserve(storageDelta, 0, 0);
+  let archived = false;
+  let copyStarted = false;
+  let usageCommitAttempted = false;
+  try {
+    if (versionPlan) {
+      await writeTrashPlan(bucket, versionPlan);
+      archived = true;
     }
-    await usage.release(copiedSize, 0, 0);
+    copyStarted = true;
+    await applyCopyPlan(env, plan);
+
+    const desiredKeys = new Set(plan.map((item) => item.to));
+    const staleKeys = oldDestinationKeys.filter((key) => !desiredKeys.has(key));
+    if (staleKeys.length) await deleteKeys(bucket, staleKeys);
+
+    if (move) {
+      if (source.collection) {
+        const sourcePrefix = `${source.key}/`;
+        await deleteKeys(
+          bucket,
+          [...new Set([sourcePrefix, ...plan.flatMap((item) => item.from ? [item.from] : [])])],
+        );
+      } else {
+        await bucket.delete(source.key);
+      }
+    } else {
+      // COPY retains its source and adds a full destination tree.
+    }
+    usageCommitAttempted = true;
+    await usage.commit(storageDelta, 0, 0, reservationId);
+  } catch (error) {
+    if (usageCommitAttempted) throw error;
+    if (archived || copyStarted) {
+      await usage.cancel(reservationId).catch(() => undefined);
+      const extraBytes = (copyStarted ? copiedSize : 0) + (archived && versionPlan
+        ? versionPlan.manifest.byteSize + versionPlan.manifestBytes
+        : 0);
+      if (extraBytes) await usage.commit(extraBytes, 0, 0).catch(() => undefined);
+    } else {
+      await usage.cancel(reservationId);
+    }
+    throw error;
   }
 
   return response(existing ? 204 : 201);

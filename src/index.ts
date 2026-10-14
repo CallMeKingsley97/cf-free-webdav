@@ -1,14 +1,18 @@
 import { isAuthorized } from "./auth/basic.js";
 import { parseDavPath } from "./http/path.js";
-import { LimitedR2, type UsageClient } from "./monitor/limited-r2.js";
+import { LimitedR2 } from "./monitor/limited-r2.js";
 import { QuotaExceededError } from "./monitor/quota.js";
 import { DOUsageClient, type UsageTrendDay } from "./monitor/usage-client.js";
 import { UsageStore } from "./monitor/usage-store.js";
-import { verifySharePath } from "./share/link.js";
+import { verifyManagedSharePath, verifySharePath } from "./share/link.js";
 import { handleWebDav } from "./webdav/handler.js";
 import { apiFiles } from "./web/api.js";
 import { webPage } from "./web/page.js";
-import { apiShare } from "./web/share-api.js";
+import { apiRevokeShare, apiShare, apiShares } from "./web/share-api.js";
+import { apiTrash } from "./web/trash-api.js";
+import { purgeExpiredTrash } from "./storage/trash.js";
+import { apiSearch } from "./web/search-api.js";
+import { apiPreview } from "./web/preview-api.js";
 
 export { UsageStore };
 
@@ -49,13 +53,20 @@ async function requireAuthorization(
   return null;
 }
 
-async function handleShareDownload(request: Request, env: Env): Promise<Response> {
+function trackedEnv(env: Env, usage: DOUsageClient): Env {
+  if (!env.FILES) return env;
+  return { ...env, FILES: new LimitedR2(env.FILES, usage) };
+}
+
+async function handleShareDownload(request: Request, env: Env, usage: DOUsageClient): Promise<Response> {
   const url = new URL(request.url);
   const parts = url.pathname.split("/").filter(Boolean);
-  if (parts.length !== 3) {
+  if (parts.length !== 3 && parts.length !== 4) {
     return new Response("Invalid share link.", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
   }
-  const [, rawExpires, rawSignature] = parts;
+  const managedId = parts.length === 4 ? parts[1] : null;
+  const rawExpires = parts.length === 4 ? parts[2] : parts[1];
+  const rawSignature = parts.length === 4 ? parts[3] : parts[2];
   const expires = Number(rawExpires);
   if (!Number.isSafeInteger(expires) || expires < 0 || rawExpires.length > 15) {
     return new Response("Invalid share link.", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
@@ -71,20 +82,27 @@ async function handleShareDownload(request: Request, env: Env): Promise<Response
   if (!target || !target.key || target.collectionHint || rawPath.includes("//")) {
     return new Response("Invalid share link.", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
   }
-  if (!(await verifySharePath(target.key, expires, rawSignature, shareSecret(env)))) {
+  if (managedId) {
+    const record = await usage.getShare(managedId);
+    if (!record || record.fileKey !== target.key || record.expiresAt !== expires) {
+      return new Response("Invalid share link.", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+    }
+    if (!(await verifyManagedSharePath(managedId, target.key, expires, rawSignature, shareSecret(env)))) {
+      return new Response("Invalid share link.", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+    }
+    const access = await usage.consumeShare(managedId);
+    if (!access.ok) {
+      const status = access.reason === "expired" || access.reason === "limit" ? 410 : 404;
+      return new Response(access.reason === "limit" ? "This share link reached its access limit." : "Invalid share link.", {
+        status,
+        headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
+      });
+    }
+  } else if (!(await verifySharePath(target.key, expires, rawSignature, shareSecret(env)))) {
     return new Response("Invalid share link.", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
   }
 
-  return handleWebDav(request, env, target, nullShareUsage());
-}
-
-function nullShareUsage(): UsageClient {
-  return {
-    summary: () => Promise.reject(new Error("Usage is not tracked for shared downloads.")),
-    reserve: () => Promise.resolve(),
-    commit: () => Promise.resolve(),
-    release: () => Promise.resolve(),
-  };
+  return handleWebDav(request, trackedEnv(env, usage), target, usage);
 }
 
 export default {
@@ -107,7 +125,7 @@ export default {
         "cache-control": "private, no-store",
         "x-content-type-options": "nosniff",
         "referrer-policy": "same-origin",
-        "content-security-policy": "default-src 'none'; style-src 'nonce-" + nonce + "'; script-src 'nonce-" + nonce + "'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+        "content-security-policy": "default-src 'none'; style-src 'nonce-" + nonce + "'; script-src 'nonce-" + nonce + "'; connect-src 'self'; img-src 'self' data:; media-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
       });
       return new Response(webPage(nonce), { headers });
     }
@@ -115,17 +133,55 @@ export default {
       const denied = await requireAuthorization(request, env);
       if (denied) return denied;
       if (!env.USAGE_STORE) return new Response("Durable Object binding is not configured.", { status: 503 });
-      return apiFiles(request, env, new DOUsageClient(env.USAGE_STORE));
+      const usage = new DOUsageClient(env.USAGE_STORE);
+      return apiFiles(request, trackedEnv(env, usage), usage);
+    }
+    if (url.pathname === "/api/search" && request.method === "GET") {
+      const denied = await requireAuthorization(request, env);
+      if (denied) return denied;
+      if (!env.USAGE_STORE) return new Response("Durable Object binding is not configured.", { status: 503 });
+      const usage = new DOUsageClient(env.USAGE_STORE);
+      return apiSearch(request, trackedEnv(env, usage));
+    }
+    if (url.pathname === "/api/preview" && request.method === "GET") {
+      const denied = await requireAuthorization(request, env);
+      if (denied) return denied;
+      if (!env.USAGE_STORE) return new Response("Durable Object binding is not configured.", { status: 503 });
+      const usage = new DOUsageClient(env.USAGE_STORE);
+      return apiPreview(request, trackedEnv(env, usage));
     }
     if (url.pathname === "/api/share" && request.method === "POST") {
       const denied = await requireAuthorization(request, env);
       if (denied) return denied;
-      return apiShare(request, env);
+      if (!env.USAGE_STORE) return new Response("Durable Object binding is not configured.", { status: 503 });
+      const usage = new DOUsageClient(env.USAGE_STORE);
+      return apiShare(request, trackedEnv(env, usage), usage);
+    }
+    if (url.pathname === "/api/shares" && request.method === "GET") {
+      const denied = await requireAuthorization(request, env);
+      if (denied) return denied;
+      if (!env.USAGE_STORE) return new Response("Durable Object binding is not configured.", { status: 503 });
+      return apiShares(request, env, new DOUsageClient(env.USAGE_STORE));
+    }
+    if (url.pathname.startsWith("/api/shares/") && request.method === "DELETE") {
+      const denied = await requireAuthorization(request, env);
+      if (denied) return denied;
+      if (!env.USAGE_STORE) return new Response("Durable Object binding is not configured.", { status: 503 });
+      const id = url.pathname.slice("/api/shares/".length);
+      return apiRevokeShare(id, new DOUsageClient(env.USAGE_STORE));
+    }
+    if (url.pathname === "/api/trash" || url.pathname.startsWith("/api/trash/")) {
+      const denied = await requireAuthorization(request, env);
+      if (denied) return denied;
+      if (!env.FILES || !env.USAGE_STORE) return new Response("R2 bucket or Durable Object binding is not configured.", { status: 503 });
+      const usage = new DOUsageClient(env.USAGE_STORE);
+      return apiTrash(request, trackedEnv(env, usage), usage);
     }
     if (url.pathname.startsWith("/share/") && request.method === "GET") {
       if (!hasCredentials(env)) return credentialError("Set the WEBDAV_PASSWORD secret before using WebDAV.");
       if (!env.FILES) return credentialError("R2 bucket is not configured.");
-      return handleShareDownload(request, env);
+      if (!env.USAGE_STORE) return credentialError("Durable Object binding is not configured.");
+      return handleShareDownload(request, env, new DOUsageClient(env.USAGE_STORE));
     }
     if (url.pathname === "/api/trend" && request.method === "GET") {
       const denied = await requireAuthorization(request, env);
@@ -175,13 +231,20 @@ export default {
     if (!env.FILES || !env.USAGE_STORE) {
       return new Response("R2 bucket or Durable Object binding is not configured.", { status: 503 });
     }
-    const guardedEnv = { ...env, FILES: new LimitedR2(env.FILES, new DOUsageClient(env.USAGE_STORE)) };
-    return handleWebDav(request, guardedEnv, path, new DOUsageClient(env.USAGE_STORE));
+    const usage = new DOUsageClient(env.USAGE_STORE);
+    return handleWebDav(request, trackedEnv(env, usage), path, usage);
   },
   async scheduled(_event: ScheduledController, env: Env): Promise<void> {
     const usageStore = env.USAGE_STORE;
     if (!usageStore) throw new Error("Durable Object binding is not configured.");
     const client = new DOUsageClient(usageStore);
+    if (env.FILES) {
+      const tracked = trackedEnv(env, client).FILES;
+      if (tracked) {
+        const releasedBytes = await purgeExpiredTrash(tracked);
+        if (releasedBytes) await client.release(releasedBytes, 0, 0);
+      }
+    }
     await client.reconcileOfficial();
   },
 } satisfies ExportedHandler<Env>;

@@ -40,6 +40,7 @@ Worker 会在 Durable Object 中记录 R2 Class A 操作数、Class B 操作数�
 - `QUOTA_STORAGE_MAX_BYTES`：默认 `10737418240`
 - `QUOTA_THRESHOLD_PERCENT`：默认 `0.8`，即达到各上限的 80% 后停止写入
 - `R2_BUCKET_NAME`：官方校准使用的真实 R2 bucket 名称；默认值与自动创建的 `cf-free-webdav-files` 一致
+- `TRASH_RETENTION_DAYS`：回收站和文件版本的保留天数，默认 `30`，有效范围为 `1` 到 `365`
 
 `GET /usage`（需要 Basic Auth）返回当前计数和熔断状态。这些是 Worker 侧估算值；不包含直接使用 R2 控制台/API 的用量，Cloudflare 官方统计也有延迟。可参考下文的官方用量校准提升精度。
 
@@ -64,18 +65,25 @@ npx wrangler secret put FEISHU_WEBHOOK_SECRET  # 可选；仅当机器人开启�
 
 ## Web 管理页面
 
-访问 Worker 根路径并输入 WebDAV 用户名和密码，可以浏览目录、新建文件夹、重命名、下载、上传和删除文件。页面展示 R2 存储与 Class A/B 操作的免费额度、当前用量和使用进度；“同步官方用量”按钮会立即触发一次官方用量校准。上传时显示实时进度，也可以把文件直接拖拽到文件列表上传。
+访问 Worker 根路径并输入 WebDAV 用户名和密码，可以浏览目录、新建文件夹、重命名、下载、上传和删除文件。页面支持递归搜索、排序、多选批量操作，以及图片、音频、视频和小于 1 MiB 的纯文本预览。页面展示 R2 存储与 Class A/B 操作的免费额度、当前用量和使用进度；“同步官方用量”按钮会立即触发一次官方用量校准。上传时显示实时进度，也可以把文件直接拖拽到文件列表上传。
 
 页面通过 `/api/files` 获取目录列表和用量状态，复用同一个 Basic Auth 会话。存储进度按配置的 `QUOTA_STORAGE_MAX_BYTES` 展示，官方校准结果会影响展示值。
 
+### 回收站与版本恢复
+
+管理页的“回收站”视图可以恢复已删除的文件和目录，也可以单条或批量永久删除、清空回收站。WebDAV `DELETE` 会移入回收站；覆盖文件以及覆盖式 `COPY`、`MOVE` 会保留被替换内容作为历史版本。恢复删除项要求原路径空闲；恢复历史版本会把当前内容另存为新版本。项目每 6 小时清理超过 `TRASH_RETENTION_DAYS` 的内容。
+
+回收站和历史版本仍占用 R2 存储，并计入用量；永久删除或到期清理才会释放空间。归档文件会产生额外 R2 Class A 操作，配额面板会计入这些操作。系统保留 `.__cf_free_webdav__` 作为内部对象前缀，不能用作用户文件目录。
+
 ## 分享链接
 
-管理页面可以为单个文件生成签名下载链接。分享链接在过期前无需 Basic Auth 即可访问，并支持 HTTP Range 请求，可直接交给播放器流式播放。
+管理页面可以为单个文件生成签名下载链接。新链接会记录在 Durable Object 中，可在“分享链接”视图查看、复制或单条/批量撤销，也可设置访问次数上限。链接在过期前无需 Basic Auth 即可访问，并支持 HTTP Range 请求，可直接交给播放器流式播放；每个 Range 请求都会计入访问次数。
 
 - 有效期可选：1 小时、1 天、7 天或 30 天。
-- 链接使用 HMAC-SHA256 签名，无状态验证，不需要额外存储。
+- 链接使用 HMAC-SHA256 签名，并保存撤销状态和访问次数。
 - 仅支持分享文件，不支持分享目录。
-- 签名密钥默认回退为 `WEBDAV_PASSWORD`，修改该 Secret 会使所有已生成的链接失效。如需与 WebDAV 密码解耦，可设置可选的 `SHARE_SECRET`：
+- 升级前生成的旧格式链接仍可访问到原过期时间，但不会出现在管理列表中，不能单独撤销；轮换签名密钥可使旧链接失效。
+- 签名密钥默认回退为 `WEBDAV_PASSWORD`。如需与 WebDAV 密码解耦，可设置可选的 `SHARE_SECRET`：
 
 ```bash
 npx wrangler secret put SHARE_SECRET
@@ -132,6 +140,8 @@ npm run dev
 
 - 这是面向个人使用的 WebDAV 常用功能子集，暂不支持 `LOCK` 和 `UNLOCK`。自定义死属性不会持久化，`PROPPATCH` 会返回属性级 `403`；依赖锁或自定义属性的客户端可能无法正常同步。
 - `COPY` 和 `MOVE` 通过读取后写入对象实现，不是原子操作。目录递归操作最多处理 1000 个对象，以限制单个请求的资源消耗。
+- 删除会先把文件复制到回收站，再删除原对象；目录归档同样受 1000 个对象限制。内部前缀 `.__cf_free_webdav__` 为系统保留名称。
+- 为保证清理操作在写入熔断后仍可使用，回收站归档会继续记入 Class A 用量，但内部归档写入不受写入熔断拦截；大量删除可能使 Class A 估算超过预警阈值。可永久清理回收站释放存储，但已发生的操作计数不会回退。
 - `PROPFIND` 目录枚举会调用 R2 `ListObjects`，计入 A 类操作；大量同步客户端可能较快消耗该月免费额度。
 - Cloudflare Free 账户的单次请求体上限为 100 MB，因此单次 WebDAV `PUT` 不能上传超过该大小的文件。大文件分块上传需要客户端和服务端共同支持额外协议。
 - Cloudflare 当前的 R2 Standard 免费额度为每月 10 GB-month 存储、100 万次 A 类操作、1000 万次 B 类操作；Worker Free 包含每天 10 万次入站请求。出站流量免费，超出免费用量可能产生费用。以 Cloudflare 控制台和[官方定价页](https://developers.cloudflare.com/r2/pricing/)、[Workers 定价页](https://developers.cloudflare.com/workers/platform/pricing/)、[请求限制页](https://developers.cloudflare.com/workers/platform/limits/)为准。

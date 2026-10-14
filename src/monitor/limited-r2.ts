@@ -1,9 +1,11 @@
 import type { UsageSummary } from "./quota.js";
+import { RESERVED_ROOT } from "../http/path.js";
 
 export interface UsageClient {
   summary(): Promise<UsageSummary>;
-  reserve(storageBytes: number, classAOperations: number, classBOperations: number): Promise<void>;
-  commit(storageBytes: number, classAOperations: number, classBOperations: number): Promise<void>;
+  reserve(storageBytes: number, classAOperations: number, classBOperations: number): Promise<string>;
+  commit(storageBytes: number, classAOperations: number, classBOperations: number, reservationId?: string): Promise<void>;
+  cancel(reservationId: string): Promise<void>;
   release(storageBytes: number, classAOperations: number, classBOperations: number): Promise<void>;
 }
 
@@ -35,11 +37,23 @@ export class LimitedR2 implements R2Bucket {
   }
 
   async put(key: string, value: ArrayBuffer | ArrayBufferView | ReadableStream | string | null, options?: R2PutOptions): Promise<R2Object> {
-    const size = estimateValueSize(value);
-    await this.usage.reserve(size, 1, 0);
-    const result = await this.bucket.put(key, value, options);
-    await this.usage.commit(size, 1, 0);
-    return result;
+    const internal = key.split("/", 1)[0] === RESERVED_ROOT;
+    if (internal) {
+      const result = await this.bucket.put(key, value, options);
+      await this.usage.commit(0, 1, 0);
+      return result;
+    }
+    const reservationId = await this.usage.reserve(0, 1, 0);
+    let written = false;
+    try {
+      const result = await this.bucket.put(key, value, options);
+      written = true;
+      await this.usage.commit(0, 1, 0, reservationId);
+      return result;
+    } catch (error) {
+      if (!written) await this.usage.cancel(reservationId);
+      throw error;
+    }
   }
 
   async delete(keys: string | string[]): Promise<void> {
@@ -53,10 +67,17 @@ export class LimitedR2 implements R2Bucket {
   }
 
   async createMultipartUpload(key: string, options?: R2MultipartOptions): Promise<R2MultipartUpload> {
-    await this.usage.reserve(0, 1, 0);
-    const upload = await this.bucket.createMultipartUpload(key, options);
-    await this.usage.commit(0, 1, 0);
-    return upload;
+    const reservationId = await this.usage.reserve(0, 1, 0);
+    let created = false;
+    try {
+      const upload = await this.bucket.createMultipartUpload(key, options);
+      created = true;
+      await this.usage.commit(0, 1, 0, reservationId);
+      return upload;
+    } catch (error) {
+      if (!created) await this.usage.cancel(reservationId);
+      throw error;
+    }
   }
 
   resumeMultipartUpload(key: string, uploadId: string): R2MultipartUpload {

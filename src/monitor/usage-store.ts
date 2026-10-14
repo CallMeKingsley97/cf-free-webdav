@@ -11,12 +11,21 @@ import {
 } from "./quota.js";
 import { fetchOfficialUsage, startOfMonthISO } from "./analytics.js";
 import { notifyThreshold } from "../notify/threshold.js";
+import type { ShareCreateInput } from "../share/record.js";
 
 const STATE_KEY = "r2-usage-state";
+const RESERVATIONS_KEY = "r2-usage-reservations";
+const COMMITTED_RESERVATIONS_KEY = "r2-usage-committed-reservations";
 const SNAPSHOT_RETENTION_DAYS = 60;
+const RESERVATION_TTL_MS = 60 * 60 * 1000;
+
+interface QuotaReservation extends ReservationRequest {
+  expiresAt: number;
+}
 
 export class UsageStore {
   private tableReady = false;
+  private stateLock: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly state: DurableObjectState,
@@ -35,6 +44,18 @@ export class UsageStore {
         blocked INTEGER NOT NULL
       )
     `);
+    this.state.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS managed_shares (
+        id TEXT PRIMARY KEY,
+        file_key TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        max_downloads INTEGER,
+        downloads INTEGER NOT NULL DEFAULT 0,
+        revoked INTEGER NOT NULL DEFAULT 0
+      )
+    `);
+    this.state.storage.sql.exec(`CREATE INDEX IF NOT EXISTS managed_shares_expiry ON managed_shares (expires_at)`);
     this.tableReady = true;
   }
 
@@ -75,6 +96,8 @@ export class UsageStore {
         return this.reserve(await readJson(request));
       case "/commit":
         return this.commit(await readJson(request));
+      case "/cancel":
+        return this.cancel(await readReservationId(request));
       case "/release":
         return this.release(await readJson(request));
       case "/reconcile":
@@ -85,6 +108,16 @@ export class UsageStore {
         return this.summary();
       case "/trend":
         return this.trend();
+      case "/shares/create":
+        return this.createShare(await readShareInput(request));
+      case "/shares/list":
+        return this.listShares();
+      case "/shares/get":
+        return this.getShare(url.searchParams.get("id") || "");
+      case "/shares/revoke":
+        return this.revokeShare(url.searchParams.get("id") || "");
+      case "/shares/consume":
+        return this.consumeShare(await readShareConsumeInput(request));
       case "/reset":
         return this.reset();
       default:
@@ -93,9 +126,13 @@ export class UsageStore {
   }
 
   async alarm(): Promise<void> {
-    await this.ensureCurrentMonth();
-    await this.state.storage.delete(STATE_KEY);
-    await this.scheduleMonthReset(new Date());
+    await this.withStateLock(async () => {
+      const now = new Date();
+      await this.save(emptyUsageState(now));
+      await this.state.storage.put(RESERVATIONS_KEY, {});
+      await this.state.storage.put(COMMITTED_RESERVATIONS_KEY, {});
+      await this.scheduleMonthReset(now);
+    });
   }
 
 
@@ -106,7 +143,8 @@ export class UsageStore {
     if (stored && stored.month === month) return stored;
 
     const fresh = emptyUsageState(now);
-    this.state.storage.put(STATE_KEY, fresh);
+    await this.state.storage.put(STATE_KEY, fresh);
+    await this.state.storage.put(RESERVATIONS_KEY, {});
     await this.scheduleMonthReset(now);
     return fresh;
   }
@@ -115,7 +153,7 @@ export class UsageStore {
     const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
     const currentAlarm = await this.state.storage.getAlarm();
     if (!currentAlarm || currentAlarm < next) {
-      this.state.storage.setAlarm(next);
+      await this.state.storage.setAlarm(next);
     }
   }
 
@@ -124,50 +162,105 @@ export class UsageStore {
   }
 
   private async reserve(input: ReservationRequest): Promise<Response> {
-    const state = await this.ensureCurrentMonth();
-    const config = readQuotaConfig(this.env);
+    if (input.storageBytes < 0 || input.classAOperations < 0 || input.classBOperations < 0) {
+      return Response.json({ ok: false, reason: "Reservations cannot be negative." }, { status: 400 });
+    }
+    return this.withStateLock(async () => {
+      const state = await this.ensureCurrentMonth();
+      const reservations = await this.currentReservations();
+      const pending = sumReservations(reservations);
+      const projected: UsageState = {
+        ...state,
+        storageBytes: state.storageBytes + pending.storageBytes + input.storageBytes,
+        classAOperations: state.classAOperations + pending.classAOperations + input.classAOperations,
+        classBOperations: state.classBOperations + pending.classBOperations + input.classBOperations,
+      };
+      const config = readQuotaConfig(this.env);
+      const reason = input.storageBytes > 0 || input.classAOperations > 0
+        ? storageBlockReason(projected, config) ?? operationBlockReason(projected, config)
+        : null;
+      if (reason) return Response.json({ ok: false, reason });
 
-    if (input.storageBytes > 0) {
-      const reason = storageBlockReason(state, config);
-      if (reason) return Response.json({ ok: false, reason });
-    }
-    if (input.classAOperations > 0) {
-      const reason = operationBlockReason(state, config);
-      if (reason) return Response.json({ ok: false, reason });
-    }
-    return Response.json({ ok: true });
+      const reservationId = crypto.randomUUID();
+      reservations[reservationId] = { ...input, expiresAt: Date.now() + RESERVATION_TTL_MS };
+      await this.state.storage.put(RESERVATIONS_KEY, reservations);
+      return Response.json({ ok: true, reservationId });
+    });
   }
 
   private async commit(input: ReservationRequest): Promise<Response> {
-    const state = await this.ensureCurrentMonth();
-    if (state.storageBytes + input.storageBytes < 0) state.storageBytes = 0;
-    else state.storageBytes += input.storageBytes;
-    state.classAOperations += input.classAOperations;
-    state.classBOperations += input.classBOperations;
-    await this.save(state);
-    try {
-      this.recordSnapshot(state);
-    } catch {
-      console.error(JSON.stringify({ level: "error", event: "snapshot_record_failed" }));
-    }
-    return Response.json({ ok: true, state });
+    return this.withStateLock(async () => {
+      await this.ensureCurrentMonth();
+      const reservationId = input.reservationId;
+      const now = Date.now();
+      const state = await this.state.storage.transaction(async (transaction) => {
+        const values = await transaction.get([STATE_KEY, RESERVATIONS_KEY, COMMITTED_RESERVATIONS_KEY]);
+        const current = values.get(STATE_KEY) as UsageState | undefined;
+        const reservations = values.get(RESERVATIONS_KEY) as Record<string, QuotaReservation> | undefined || {};
+        const committed = values.get(COMMITTED_RESERVATIONS_KEY) as Record<string, number> | undefined || {};
+        const state = current?.month === monthKey(new Date()) ? current : emptyUsageState(new Date());
+
+        for (const [id, expiresAt] of Object.entries(committed)) {
+          if (expiresAt <= now) delete committed[id];
+        }
+        if (reservationId && committed[reservationId]) return { ...state };
+
+        if (reservationId) {
+          delete reservations[reservationId];
+          committed[reservationId] = now + RESERVATION_TTL_MS;
+        }
+        state.storageBytes = Math.max(0, state.storageBytes + input.storageBytes);
+        state.classAOperations = Math.max(0, state.classAOperations + input.classAOperations);
+        state.classBOperations = Math.max(0, state.classBOperations + input.classBOperations);
+        await transaction.put({
+          [STATE_KEY]: state,
+          [RESERVATIONS_KEY]: reservations,
+          [COMMITTED_RESERVATIONS_KEY]: committed,
+        });
+        return state;
+      });
+      try {
+        this.recordSnapshot(state);
+      } catch {
+        console.error(JSON.stringify({ level: "error", event: "snapshot_record_failed" }));
+      }
+      return Response.json({ ok: true, state });
+    });
+  }
+
+  private async cancel(input: { reservationId: string }): Promise<Response> {
+    return this.withStateLock(async () => {
+      const reservations = await this.currentReservations();
+      await this.state.storage.transaction(async (transaction) => {
+        const committed = await transaction.get<Record<string, number>>(COMMITTED_RESERVATIONS_KEY) || {};
+        if (!committed[input.reservationId]) {
+          delete reservations[input.reservationId];
+          await transaction.put(RESERVATIONS_KEY, reservations);
+        }
+      });
+      return Response.json({ ok: true });
+    });
   }
 
   private async release(input: ReservationRequest): Promise<Response> {
-    const state = await this.ensureCurrentMonth();
-    state.storageBytes = Math.max(0, state.storageBytes - input.storageBytes);
-    state.classAOperations = Math.max(0, state.classAOperations - input.classAOperations);
-    state.classBOperations = Math.max(0, state.classBOperations - input.classBOperations);
-    await this.save(state);
-    return Response.json({ ok: true, state });
+    return this.withStateLock(async () => {
+      const state = await this.ensureCurrentMonth();
+      state.storageBytes = Math.max(0, state.storageBytes - input.storageBytes);
+      state.classAOperations = Math.max(0, state.classAOperations - input.classAOperations);
+      state.classBOperations = Math.max(0, state.classBOperations - input.classBOperations);
+      await this.save(state);
+      return Response.json({ ok: true, state });
+    });
   }
 
   private async reconcile(input: { storageBytes: number }): Promise<Response> {
-    const state = await this.ensureCurrentMonth();
-    state.storageBytes = Math.max(0, Math.floor(input.storageBytes));
-    state.reconciledAt = new Date().toISOString();
-    await this.save(state);
-    return Response.json({ ok: true, state });
+    return this.withStateLock(async () => {
+      const state = await this.ensureCurrentMonth();
+      state.storageBytes = Math.max(0, Math.floor(input.storageBytes));
+      state.reconciledAt = new Date().toISOString();
+      await this.save(state);
+      return Response.json({ ok: true, state });
+    });
   }
 
   async reconcileOfficial(): Promise<Response> {
@@ -178,25 +271,26 @@ export class UsageStore {
       return Response.json({ ok: false, reason: "CF_ACCOUNT_ID and CF_API_TOKEN are required." }, { status: 503 });
     }
 
-    const state = await this.ensureCurrentMonth();
     const startOfMonth = startOfMonthISO(new Date());
     const official = await fetchOfficialUsage(accountId, apiToken, bucketName, startOfMonth);
+    return this.withStateLock(async () => {
+      const state = await this.ensureCurrentMonth();
+      state.localClassAOperations = state.classAOperations;
+      state.localClassBOperations = state.classBOperations;
+      state.localStorageBytes = state.storageBytes;
+      state.reconciledClassAOperations = official.classAOperations;
+      state.reconciledClassBOperations = official.classBOperations;
+      state.reconciledStorageBytes = official.storageBytes;
 
-    state.localClassAOperations = state.classAOperations;
-    state.localClassBOperations = state.classBOperations;
-    state.localStorageBytes = state.storageBytes;
-    state.reconciledClassAOperations = official.classAOperations;
-    state.reconciledClassBOperations = official.classBOperations;
-    state.reconciledStorageBytes = official.storageBytes;
+      state.classAOperations = Math.max(official.classAOperations, state.localClassAOperations);
+      state.classBOperations = Math.max(official.classBOperations, state.localClassBOperations);
+      state.storageBytes = Math.max(official.storageBytes, state.localStorageBytes);
+      state.reconciledAt = new Date().toISOString();
+      await this.save(state);
 
-    state.classAOperations = Math.max(official.classAOperations, state.localClassAOperations);
-    state.classBOperations = Math.max(official.classBOperations, state.localClassBOperations);
-    state.storageBytes = Math.max(official.storageBytes, state.localStorageBytes);
-    state.reconciledAt = new Date().toISOString();
-    await this.save(state);
-
-    this.ctxSafeSideEffects(state);
-    return Response.json({ ok: true, state });
+      this.ctxSafeSideEffects(state);
+      return Response.json({ ok: true, state });
+    });
   }
 
   private ctxSafeSideEffects(state: UsageState): void {
@@ -217,8 +311,17 @@ export class UsageStore {
   }
 
   private async summary(): Promise<Response> {
-    const state = await this.ensureCurrentMonth();
-    return Response.json(usageSummary(state, readQuotaConfig(this.env)));
+    return this.withStateLock(async () => {
+      const state = await this.ensureCurrentMonth();
+      const pending = sumReservations(await this.currentReservations());
+      const projected: UsageState = {
+        ...state,
+        storageBytes: state.storageBytes + pending.storageBytes,
+        classAOperations: state.classAOperations + pending.classAOperations,
+        classBOperations: state.classBOperations + pending.classBOperations,
+      };
+      return Response.json(usageSummary(projected, readQuotaConfig(this.env)));
+    });
   }
 
   private trend(): Response {
@@ -241,9 +344,120 @@ export class UsageStore {
   }
 
   private async reset(): Promise<Response> {
-    const fresh = emptyUsageState(new Date());
-    await this.save(fresh);
-    return Response.json({ ok: true, state: fresh });
+    return this.withStateLock(async () => {
+      const fresh = emptyUsageState(new Date());
+      await this.save(fresh);
+      await this.state.storage.put(RESERVATIONS_KEY, {});
+      await this.state.storage.put(COMMITTED_RESERVATIONS_KEY, {});
+      return Response.json({ ok: true, state: fresh });
+    });
+  }
+
+  private async currentReservations(): Promise<Record<string, QuotaReservation>> {
+    const stored = await this.state.storage.get<Record<string, QuotaReservation>>(RESERVATIONS_KEY) || {};
+    const now = Date.now();
+    let changed = false;
+    for (const [id, reservation] of Object.entries(stored)) {
+      if (!reservation || reservation.expiresAt <= now) {
+        delete stored[id];
+        changed = true;
+      }
+    }
+    if (changed) await this.state.storage.put(RESERVATIONS_KEY, stored);
+    return stored;
+  }
+
+  private createShare(input: ShareCreateInput): Response {
+    this.ensureTable();
+    if (
+      !isShareId(input.id) ||
+      !input.fileKey ||
+      !Number.isSafeInteger(input.expiresAt) ||
+      (input.maxDownloads !== null && (!Number.isSafeInteger(input.maxDownloads) || input.maxDownloads < 1 || input.maxDownloads > 10_000))
+    ) {
+      return Response.json({ ok: false, reason: "Invalid share record." }, { status: 400 });
+    }
+    this.pruneShares();
+    this.state.storage.sql.exec(
+      `INSERT INTO managed_shares (id, file_key, expires_at, created_at, max_downloads, downloads, revoked)
+       VALUES (?, ?, ?, ?, ?, 0, 0)`,
+      input.id,
+      input.fileKey,
+      input.expiresAt,
+      input.createdAt,
+      input.maxDownloads,
+    );
+    return Response.json({ ok: true });
+  }
+
+  private listShares(): Response {
+    this.ensureTable();
+    this.pruneShares();
+    const rows = this.state.storage.sql.exec<ShareSqlRow>(
+      `SELECT id, file_key, expires_at, created_at, max_downloads, downloads, revoked
+       FROM managed_shares ORDER BY created_at DESC LIMIT 500`,
+    ).toArray();
+    return Response.json({ ok: true, shares: rows.map(mapShareRow) });
+  }
+
+  private getShare(id: string): Response {
+    this.ensureTable();
+    if (!isShareId(id)) return Response.json({ ok: true, share: null });
+    const row = this.state.storage.sql.exec<ShareSqlRow>(
+      `SELECT id, file_key, expires_at, created_at, max_downloads, downloads, revoked
+       FROM managed_shares WHERE id = ?`,
+      id,
+    ).toArray()[0];
+    return Response.json({ ok: true, share: row ? mapShareRow(row) : null });
+  }
+
+  private revokeShare(id: string): Response {
+    this.ensureTable();
+    if (!isShareId(id)) return Response.json({ ok: true, revoked: false });
+    const row = this.state.storage.sql.exec<{ id: string }>(
+      `SELECT id FROM managed_shares WHERE id = ?`,
+      id,
+    ).toArray()[0];
+    if (!row) return Response.json({ ok: true, revoked: false });
+    this.state.storage.sql.exec(`UPDATE managed_shares SET revoked = 1 WHERE id = ?`, id);
+    return Response.json({ ok: true, revoked: true });
+  }
+
+  private async consumeShare(input: { id: string; now: number }): Promise<Response> {
+    return this.withStateLock(async () => {
+      this.ensureTable();
+      if (!isShareId(input.id)) return Response.json({ ok: false, reason: "missing" });
+      const row = this.state.storage.sql.exec<ShareSqlRow>(
+        `SELECT id, file_key, expires_at, created_at, max_downloads, downloads, revoked
+         FROM managed_shares WHERE id = ?`,
+        input.id,
+      ).toArray()[0];
+      if (!row) return Response.json({ ok: false, reason: "missing" });
+      if (row.revoked !== 0) return Response.json({ ok: false, reason: "revoked" });
+      if (Math.floor(input.now / 1000) > row.expires_at) return Response.json({ ok: false, reason: "expired" });
+      if (row.max_downloads !== null && row.downloads >= row.max_downloads) {
+        return Response.json({ ok: false, reason: "limit" });
+      }
+      this.state.storage.sql.exec(`UPDATE managed_shares SET downloads = downloads + 1 WHERE id = ?`, input.id);
+      return Response.json({ ok: true });
+    });
+  }
+
+  private pruneShares(): void {
+    const cutoff = Math.floor(Date.now() / 1000) - 90 * 86_400;
+    this.state.storage.sql.exec(`DELETE FROM managed_shares WHERE expires_at < ?`, cutoff);
+  }
+
+  private async withStateLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.stateLock;
+    let unlock!: () => void;
+    this.stateLock = new Promise<void>((resolve) => { unlock = resolve; });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      unlock();
+    }
   }
 }
 
@@ -251,6 +465,7 @@ export interface ReservationRequest {
   storageBytes: number;
   classAOperations: number;
   classBOperations: number;
+  reservationId?: string;
 }
 
 async function readJson(request: Request): Promise<ReservationRequest> {
@@ -260,6 +475,7 @@ async function readJson(request: Request): Promise<ReservationRequest> {
       storageBytes: safeCount(body.storageBytes),
       classAOperations: safeCount(body.classAOperations),
       classBOperations: safeCount(body.classBOperations),
+      reservationId: typeof body.reservationId === "string" ? body.reservationId : undefined,
     };
   } catch {
     return { storageBytes: 0, classAOperations: 0, classBOperations: 0 };
@@ -269,4 +485,85 @@ async function readJson(request: Request): Promise<ReservationRequest> {
 function safeCount(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
+}
+
+async function readReservationId(request: Request): Promise<{ reservationId: string }> {
+  try {
+    const body = (await request.json()) as { reservationId?: unknown };
+    return { reservationId: typeof body.reservationId === "string" ? body.reservationId : "" };
+  } catch {
+    return { reservationId: "" };
+  }
+}
+
+function sumReservations(reservations: Record<string, QuotaReservation>): ReservationRequest {
+  return Object.values(reservations).reduce(
+    (sum, item) => ({
+      storageBytes: sum.storageBytes + item.storageBytes,
+      classAOperations: sum.classAOperations + item.classAOperations,
+      classBOperations: sum.classBOperations + item.classBOperations,
+    }),
+    { storageBytes: 0, classAOperations: 0, classBOperations: 0 },
+  );
+}
+
+interface ShareSqlRow extends Record<string, SqlStorageValue> {
+  id: string;
+  file_key: string;
+  expires_at: number;
+  created_at: string;
+  max_downloads: number | null;
+  downloads: number;
+  revoked: number;
+}
+
+function mapShareRow(row: ShareSqlRow): {
+  id: string;
+  fileKey: string;
+  expiresAt: number;
+  createdAt: string;
+  maxDownloads: number | null;
+  downloads: number;
+  revoked: boolean;
+} {
+  return {
+    id: row.id,
+    fileKey: row.file_key,
+    expiresAt: row.expires_at,
+    createdAt: row.created_at,
+    maxDownloads: row.max_downloads,
+    downloads: row.downloads,
+    revoked: row.revoked !== 0,
+  };
+}
+
+function isShareId(id: string): boolean {
+  return /^[0-9a-f-]{36}$/i.test(id);
+}
+
+async function readShareInput(request: Request): Promise<ShareCreateInput> {
+  try {
+    const body = await request.json() as Partial<ShareCreateInput>;
+    return {
+      id: typeof body.id === "string" ? body.id : "",
+      fileKey: typeof body.fileKey === "string" ? body.fileKey : "",
+      expiresAt: Number(body.expiresAt),
+      createdAt: typeof body.createdAt === "string" ? body.createdAt : "",
+      maxDownloads: body.maxDownloads === null || body.maxDownloads === undefined ? null : Number(body.maxDownloads),
+    };
+  } catch {
+    return { id: "", fileKey: "", expiresAt: 0, createdAt: "", maxDownloads: null };
+  }
+}
+
+async function readShareConsumeInput(request: Request): Promise<{ id: string; now: number }> {
+  try {
+    const body = await request.json() as { id?: unknown; now?: unknown };
+    return {
+      id: typeof body.id === "string" ? body.id : "",
+      now: Number.isSafeInteger(body.now) ? Number(body.now) : Date.now(),
+    };
+  } catch {
+    return { id: "", now: Date.now() };
+  }
 }

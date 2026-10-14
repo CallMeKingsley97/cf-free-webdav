@@ -40,6 +40,7 @@ Configure thresholds in `wrangler.jsonc` `vars`:
 - `QUOTA_STORAGE_MAX_BYTES`: default `10737418240`
 - `QUOTA_THRESHOLD_PERCENT`: default `0.8`, meaning writes stop at 80% of each limit
 - `R2_BUCKET_NAME`: the real R2 bucket name used by official reconciliation; the default matches automatic provisioning (`cf-free-webdav-files`)
+- `TRASH_RETENTION_DAYS`: retention period for deleted files and versions; defaults to `30` and accepts values from `1` to `365`
 
 `GET /usage` (Basic Auth required) returns the current counters and whether the breaker is open. These are Worker-side estimates; direct R2 console/API access and R2 analytics lag are not included.
 
@@ -64,18 +65,25 @@ npx wrangler secret put FEISHU_WEBHOOK_SECRET # Optional; required only if the b
 
 ## Web management page
 
-Open the Worker root URL and sign in with your WebDAV username and password to browse directories, create folders, rename, download, upload, and delete files. The page shows R2 storage and Class A/B operation free allowances, current usage, and progress bars. The "Sync official usage" button triggers an immediate official usage reconciliation. Uploads show live progress, and you can drag files onto the file list to upload them.
+Open the Worker root URL and sign in with your WebDAV username and password to browse directories, create folders, rename, download, upload, and delete files. The page supports recursive search, sorting, multi-select actions, and previews for images, audio, video, and plain text files smaller than 1 MiB. It shows R2 storage and Class A/B operation allowances, current usage, and progress bars. The "Sync official usage" button triggers an immediate official usage reconciliation. Uploads show live progress, and you can drag files onto the file list to upload them.
 
 The page calls `/api/files` for directory listings and usage state and reuses the same Basic Auth session. Storage progress follows the configured `QUOTA_STORAGE_MAX_BYTES`; official reconciliation affects the displayed usage.
 
+### Trash and file versions
+
+The Trash view can restore deleted files and collections, permanently delete selected items, or empty the trash. WebDAV `DELETE` moves resources to trash. Replacing a file, or overwriting a destination with `COPY` or `MOVE`, retains the replaced content as a version. Restoring a deleted item requires its original path to be free; restoring a version archives the current content as a new version. Items expire after `TRASH_RETENTION_DAYS` and are cleaned up every six hours.
+
+Trash and versions remain in R2 and count toward storage usage. Permanent deletion or expiration releases that space. Archiving generates additional R2 Class A operations, which are included in the usage estimate. The `.__cf_free_webdav__` object prefix is reserved for internal data and cannot be used as a user directory.
+
 ## Share links
 
-The management page can generate signed download links for individual files. A share link works without Basic Auth until it expires and supports HTTP range requests, so media players can stream directly from it.
+The management page can generate signed download links for individual files. New links are recorded in the Durable Object and can be listed, copied, and individually or bulk revoked from the Share Links view. They can also have a maximum access count. Links work without Basic Auth until they expire and support HTTP range requests; each Range request counts toward the access limit.
 
 - Validity periods: 1 hour, 1 day, 7 days, or 30 days.
-- Links are HMAC-SHA256 signed and verified statelessly; no storage is required.
+- Links are HMAC-SHA256 signed; revocation state and access counts are stored.
 - Only files can be shared, not collections.
-- By default the signature key falls back to `WEBDAV_PASSWORD`, so changing that secret invalidates all existing links. To decouple share links from the WebDAV password, set an optional `SHARE_SECRET` secret:
+- Links created before this update remain valid until they expire, but are not listed or individually revocable. Rotating the signing secret invalidates them.
+- By default the signature key falls back to `WEBDAV_PASSWORD`. To decouple share links from the WebDAV password, set an optional `SHARE_SECRET` secret:
 
 ```bash
 npx wrangler secret put SHARE_SECRET
@@ -133,6 +141,8 @@ Authentication uses HTTPS Basic Authentication. The R2 bucket remains private an
 
 - This project implements a practical subset of WebDAV for personal use. `LOCK` and `UNLOCK` are not supported. Custom dead properties are not persisted, and `PROPPATCH` returns property-level `403` responses. Clients that require locks or custom properties may not synchronize correctly.
 - `COPY` and `MOVE` copy object data and are not atomic. Recursive directory operations are limited to 1,000 objects per request.
+- Deletion copies resources into the trash first; recursive directory archives are also limited to 1,000 objects. The `.__cf_free_webdav__` prefix is reserved for internal objects.
+- Trash archives continue to count toward Class A usage so cleanup remains available after the write breaker opens. Internal archive writes bypass that breaker but are still counted, so large deletions can push Class A usage beyond the warning threshold. Permanently deleting trash releases storage, not operation counts.
 - Directory `PROPFIND` uses R2 `ListObjects`, which counts as a Class A operation. Frequent sync requests can consume the monthly free allowance.
 - Cloudflare Free accounts have a 100 MB maximum request body size, so a single WebDAV `PUT` cannot upload a larger file. Multipart uploads require additional protocol support from both the client and server.
 - Current R2 Standard free allowances include 10 GB-month of storage, 1 million Class A operations, and 10 million Class B operations per month. Workers Free includes 100,000 inbound requests per day. R2 egress is free. Usage beyond included allowances may incur charges. Check the [R2 pricing](https://developers.cloudflare.com/r2/pricing/), [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/), and [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) pages for current terms.

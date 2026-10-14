@@ -1,4 +1,5 @@
 export const DAV_MOUNT_PATH = "/dav";
+export const RESERVED_ROOT = ".__cf_free_webdav__";
 
 export interface DavPath {
   segments: string[];
@@ -38,6 +39,7 @@ export function parseDavPath(pathname: string): DavPath | null {
   }
 
   const key = segments.join("/");
+  if (segments[0] === RESERVED_ROOT) return null;
   if (new TextEncoder().encode(key).byteLength > 1023) return null;
 
   return {

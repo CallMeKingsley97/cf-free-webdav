@@ -20,6 +20,8 @@
     "predeploy": "wrangler types",
     "deploy": "wrangler deploy",
     "deploy:setup": "node ./scripts/deploy.mjs",
+    "pretest": "wrangler types",
+    "test": "node ./scripts/test.mjs",
     "pretypecheck": "wrangler types",
     "typecheck": "tsc --noEmit"
   },

@@ -1,6 +1,10 @@
-import type { DavPath } from "../http/path.js";
+import { RESERVED_ROOT, type DavPath } from "../http/path.js";
 
 export const MAX_TREE_OBJECTS = 1000;
+
+export function isInternalKey(key: string): boolean {
+  return key === RESERVED_ROOT || key.startsWith(`${RESERVED_ROOT}/`);
+}
 
 export class StorageLimitError extends Error {
   constructor() {
@@ -96,6 +100,7 @@ export async function listChildren(
       include: ["httpMetadata"],
     });
     for (const object of page.objects) {
+      if (isInternalKey(object.key)) continue;
       if (object.key === prefix) continue;
       const relative = object.key.slice(prefix.length);
       if (!relative) continue;
@@ -111,6 +116,7 @@ export async function listChildren(
     }
 
     for (const directoryPrefix of page.delimitedPrefixes) {
+      if (isInternalKey(directoryPrefix.replace(/\/$/, ""))) continue;
       const childKey = directoryPrefix.slice(prefix.length).replace(/\/$/, "");
       if (!childKey || childKey.includes("/")) continue;
       const key = `${collectionKey ? `${collectionKey}/` : ""}${childKey}`;
