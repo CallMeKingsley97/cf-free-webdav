@@ -202,6 +202,7 @@ const script = `
   let searchTimer = 0;
   let currentSort = 'name';
   let selected = new Set();
+  let viewRequest = 0;
   const dirIcon = '<svg class="icon" viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M3.5 10h17"/></svg>';
   const fileIcon = '<svg class="icon file-icon" viewBox="0 0 24 24"><path d="M6 3.5h7l5 5v12H6a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2Z"/><path d="M13 3.5v5h5M8 13h8M8 16.5h8"/></svg>';
 
@@ -490,20 +491,25 @@ const script = `
   }
 
   async function loadTrash() {
+    const requestView = ++viewRequest;
     const response = await fetch('/api/trash', { cache: 'no-store' });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || '回收站加载失败');
+    if (requestView !== viewRequest) return;
     renderTrash(data.items || []);
   }
 
   async function loadShares() {
+    const requestView = ++viewRequest;
     const response = await fetch('/api/shares', { cache: 'no-store' });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || '分享链接加载失败');
+    if (requestView !== viewRequest) return;
     renderShares(data.shares || []);
   }
 
   async function loadRecursiveSearch(append = false) {
+    const requestView = ++viewRequest;
     const query = el('search').value.trim();
     if (!query) { searchCursor = null; return loadFiles(); }
     if (searchController) searchController.abort();
@@ -513,6 +519,7 @@ const script = `
     const response = await fetch('/api/search?' + params, { cache: 'no-store', signal: searchController.signal });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || '搜索失败');
+    if (requestView !== viewRequest) return;
     currentEntries = append
       ? [...new Map(currentEntries.concat(data.entries || []).map((entry) => [entry.key, entry])).values()]
       : (data.entries || []);
@@ -523,6 +530,9 @@ const script = `
 
   async function switchView(view) {
     currentView = view;
+    viewRequest++;
+    if (searchController) searchController.abort();
+    searchController = null;
     selected.clear();
     document.querySelectorAll('[data-view]').forEach((button) => button.classList.toggle('active', button.dataset.view === view));
     el('breadcrumbs').hidden = view !== 'files';
@@ -601,6 +611,7 @@ const script = `
 
   async function loadFiles() {
     const status = el('status');
+    const requestView = ++viewRequest;
     status.className = 'status loading';
     status.lastChild.textContent = '正在连接';
     try {
@@ -608,6 +619,7 @@ const script = `
       if (response.status === 401) { notify('认证失败，请刷新后重新登录', true); status.className = 'status error'; status.lastChild.textContent = '认证失败'; return; }
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '加载失败');
+      if (requestView !== viewRequest) return;
       currentPath = data.path || [];
       renderQuota(data.usage);
       if (currentView === 'files') {
@@ -624,6 +636,7 @@ const script = `
       status.lastChild.textContent = '存储服务正常';
       loadTrend();
     } catch (error) {
+      if (requestView !== viewRequest) return;
       notify(error.message || '加载失败', true);
       status.className = 'status error';
       status.lastChild.textContent = '连接失败';

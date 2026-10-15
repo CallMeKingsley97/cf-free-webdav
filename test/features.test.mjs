@@ -322,3 +322,16 @@ test("recursive search, safe preview, and management UI features are exposed", a
   assert.ok(inlineScript);
   assert.doesNotThrow(() => new Function(inlineScript));
 });
+
+test("management view requests are serialized by generation", async () => {
+  const { webPage } = await loadBuildModule("src/web/page.js");
+  const inlineScript = webPage("test-nonce").match(/<script nonce="test-nonce">([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(inlineScript);
+  assert.match(inlineScript, /let viewRequest = 0;/);
+  assert.match(inlineScript, /const requestView = \+\+viewRequest;/);
+  assert.match(inlineScript, /if \(requestView !== viewRequest\) return;/);
+  const loadTrashBlock = inlineScript.match(/async function loadTrash\(\) \{[\s\S]*?\n  \}/)?.[0];
+  const loadSharesBlock = inlineScript.match(/async function loadShares\(\) \{[\s\S]*?\n  \}/)?.[0];
+  assert.ok(loadTrashBlock && loadTrashBlock.includes('const requestView = ++viewRequest;'));
+  assert.ok(loadSharesBlock && loadSharesBlock.includes('const requestView = ++viewRequest;'));
+});
