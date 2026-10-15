@@ -7,7 +7,6 @@ import {
   listTrash,
   measureTrashBytes,
   planTrashEntry,
-  purgeExpiredTrash,
   removeTrashItem,
   restoreTrashItem,
   writeTrashPlan,
@@ -47,10 +46,13 @@ export async function apiTrash(request: Request, env: Env, usage: UsageClient): 
 
   try {
     if (request.method === "GET" && url.pathname === "/api/trash") {
-      const expiredBytes = await purgeExpiredTrash(bucket);
-      if (expiredBytes) await usage.release(expiredBytes, 0, 0);
       const items = await listTrash(bucket);
-      return Response.json({ items: items.map(itemResponse) }, { headers: { "cache-control": "private, no-store" } });
+      const now = Date.now();
+      const activeItems = items.filter((item) => Date.parse(item.expiresAt) > now);
+      return Response.json(
+        { items: activeItems.map(itemResponse) },
+        { headers: { "cache-control": "private, no-store" } },
+      );
     }
 
     if (request.method === "DELETE" && url.pathname === "/api/trash") {
