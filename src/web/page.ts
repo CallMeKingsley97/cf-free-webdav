@@ -202,7 +202,6 @@ const script = `
   let searchTimer = 0;
   let currentSort = 'name';
   let selected = new Set();
-  const viewCache = new Map();
   let viewRequest = 0;
   const dirIcon = '<svg class="icon" viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M3.5 10h17"/></svg>';
   const fileIcon = '<svg class="icon file-icon" viewBox="0 0 24 24"><path d="M6 3.5h7l5 5v12H6a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2Z"/><path d="M13 3.5v5h5M8 13h8M8 16.5h8"/></svg>';
@@ -439,17 +438,11 @@ const script = `
     bar.innerHTML = '<span>已选 ' + selected.size + ' 项</span><button data-bulk="select-all">全选当前页</button>' + actions + '<button data-bulk="clear">取消选择</button>';
   }
 
-  function cacheView(view, items) {
-    if (items) viewCache.set(view, { at: Date.now(), items });
-  }
-
-  function clearViewCache() {
-    viewCache.clear();
-  }
-
-  function cachedView(view) {
-    const cached = viewCache.get(view);
-    return cached && Date.now() - cached.at < 60000 ? cached.items : null;
+  function showViewLoading(message) {
+    el('entry-count').textContent = '正在加载';
+    el('table-head').innerHTML = '';
+    el('rows').innerHTML = '<tr><td colspan="6" class="empty-cell">' + message + '</td></tr>';
+    renderBulkState();
   }
 
   function renderTrash(items) {
@@ -506,33 +499,19 @@ const script = `
 
   async function loadTrash() {
     const requestView = ++viewRequest;
-    const cachedItems = cachedView('trash');
-    if (cachedItems) {
-      renderTrash(cachedItems);
-      setTimeout(() => { if (requestView === viewRequest) loadTrash().catch(() => undefined); }, 0);
-      return;
-    }
     const response = await fetch('/api/trash', { cache: 'no-store' });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || '回收站加载失败');
     if (requestView !== viewRequest) return;
-    cacheView('trash', data.items || []);
     renderTrash(data.items || []);
   }
 
   async function loadShares() {
     const requestView = ++viewRequest;
-    const cachedShares = cachedView('shares');
-    if (cachedShares) {
-      renderShares(cachedShares);
-      setTimeout(() => { if (requestView === viewRequest) loadShares().catch(() => undefined); }, 0);
-      return;
-    }
     const response = await fetch('/api/shares', { cache: 'no-store' });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || '分享链接加载失败');
     if (requestView !== viewRequest) return;
-    cacheView('shares', data.shares || []);
     renderShares(data.shares || []);
   }
 
@@ -570,6 +549,7 @@ const script = `
     el('search').value = '';
     searchCursor = null;
     el('load-more').hidden = true;
+    showViewLoading(view === 'files' ? '正在加载文件列表…' : view === 'trash' ? '正在加载回收站…' : '正在加载分享链接…');
     try {
       if (view === 'files') await loadFiles();
       if (view === 'trash') await loadTrash();
@@ -625,7 +605,7 @@ const script = `
         else if (action === 'revoke') await apiAction('/api/shares/' + encodeURIComponent(id), 'DELETE');
       }
       selected.clear();
-      clearViewCache();
+      showViewLoading('正在加载');
       notify(action === 'trash' ? '已移至回收站' : action === 'restore' ? '已恢复' : action === 'purge' ? '已永久删除' : '分享链接已撤销');
       if (currentView === 'files') await loadFiles();
       else if (currentView === 'trash') await loadTrash();
