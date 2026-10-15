@@ -29,22 +29,58 @@
 
 服务在没有密码 Secret 时会对 `/dav/` 返回 `503` 并拒绝访问；设置 Secret 后即可使用。默认用户名为 `webdav`；需要更改时，修改 `wrangler.jsonc` 中的 `WEBDAV_USERNAME` 并重新部署。不要把密码写进 `wrangler.jsonc`、README 或 GitHub Actions 配置。
 
+## 配置参数
+
+普通变量配置在 `wrangler.jsonc` 的 `vars` 中，修改后重新部署。Secret 可使用 `npx wrangler secret put NAME` 设置，或在 Worker 的 **Settings → Variables and Secrets** 中添加。本地开发时，将 Secret 写入已被 Git 忽略的 `.dev.vars`。
+
+### 普通变量
+
+| 名称 | 是否必需 | 默认值 / 格式 | 用途 |
+| --- | --- | --- | --- |
+| `WEBDAV_USERNAME` | 否 | `webdav` | Basic Auth 用户名。 |
+| `QUOTA_CLASS_A_MAX` | 否 | `1000000`；正数 | 每月 Class A 操作上限，用于写入熔断。 |
+| `QUOTA_CLASS_B_MAX` | 否 | `10000000`；正数 | 每月 Class B 操作上限，用于写入熔断。 |
+| `QUOTA_STORAGE_MAX_BYTES` | 否 | `10737418240`（10 GiB）；正数 | 存储上限，单位为字节，用于写入熔断和管理页面进度。 |
+| `QUOTA_THRESHOLD_PERCENT` | 否 | `0.8`；大于 `0` 且不超过 `1` 的比例 | 达到配额上限的多少比例时停止写入。例如 `0.8` 表示 80%。 |
+| `R2_BUCKET_NAME` | 否 | `cf-free-webdav-files` | 官方用量校准查询的实际 bucket 名称；应与绑定到 `FILES` 的 bucket 一致。 |
+| `TRASH_RETENTION_DAYS` | 否 | `30`；`1` 到 `365` 的整数 | 回收站和历史版本的保留天数。无效值会回退为 `30`。 |
+| `FEISHU_ALERT_PERCENT` | 否 | `70`；大于 `0` 且不超过 `100` 的百分数 | 飞书预警线。无效值会关闭通知，不会改变写入熔断阈值。 |
+| `CF_ACCOUNT_ID` | 仅官方校准需要 | 无默认值；Cloudflare Account ID | Analytics API 查询的账户 ID，作为 Worker 普通变量设置。 |
+
+配额数值是 Worker 内部的熔断上限，不是账单限额。无效的配额配置会使用上表默认值。`QUOTA_THRESHOLD_PERCENT` 使用比例格式，`FEISHU_ALERT_PERCENT` 使用 1 到 100 的百分数格式。
+
+### Secret
+
+| 名称 | 是否必需 | 用途 |
+| --- | --- | --- |
+| `WEBDAV_PASSWORD` | 是 | Basic Auth 密码。未设置时，WebDAV 和管理页面请求不可用。 |
+| `CF_API_TOKEN` | 仅官方校准需要 | 具有 **Account → Account Analytics → Read** 权限的 Cloudflare API Token，需与 `CF_ACCOUNT_ID` 同时配置。 |
+| `SHARE_SECRET` | 否 | 分享链接独立的 HMAC 签名密钥。未设置时使用 `WEBDAV_PASSWORD`；更换密钥会使已有链接失效。 |
+| `FEISHU_WEBHOOK_URL` | 否 | 飞书自定义机器人 webhook。设置后会在用量校准时发送阈值通知。 |
+| `FEISHU_WEBHOOK_SECRET` | 否 | 飞书签名密钥；仅机器人开启签名校验时需要。 |
+
+设置必需密码和可选的 Cloudflare API Token：
+
+```bash
+npx wrangler secret put WEBDAV_PASSWORD
+npx wrangler secret put CF_API_TOKEN
+```
+
+### Cloudflare 资源绑定与定时任务
+
+| 名称 | 要求 | 类型 | 用途 |
+| --- | --- | --- | --- |
+| `FILES` | 文件操作必需 | R2 bucket binding | 保存用户文件、回收站和历史版本，在 `wrangler.jsonc` 的 `r2_buckets` 中声明；项目使用 Wrangler 自动创建资源。 |
+| `USAGE_STORE` | 管理、配额和分享功能必需 | Durable Object binding | 保存配额计数、用量历史和分享链接状态；binding 与 SQLite migration 都在 `wrangler.jsonc` 中声明。 |
+| Cron `0 */6 * * *` | 默认启用 | Worker 定时触发器 | 每 6 小时（UTC）清理过期回收站内容并校准官方用量，在 `wrangler.jsonc` 的 `triggers.crons` 中声明。 |
+
+`FILES` 和 `USAGE_STORE` 由 Wrangler 配置资源绑定，不是普通变量或 Secret。若当前 Cloudflare 账户无法自动创建 R2，请先在 Cloudflare 中启用/创建 bucket，并确保 `R2_BUCKET_NAME` 与其名称一致。
+
 ## 免费额度熔断
 
 Worker 会在 Durable Object 中记录 R2 Class A 操作数、Class B 操作数和存储量估算值。任一指标达到阈值后，写入操作返回 `507 Insufficient Storage`；读取和删除仍可用，便于清理数据。计数每月自动重置。
 
-在 `wrangler.jsonc` 的 `vars` 中配置阈值：
-
-- `QUOTA_CLASS_A_MAX`：默认 `1000000`
-- `QUOTA_CLASS_B_MAX`：默认 `10000000`
-- `QUOTA_STORAGE_MAX_BYTES`：默认 `10737418240`
-- `QUOTA_THRESHOLD_PERCENT`：默认 `0.8`，即达到各上限的 80% 后停止写入
-- `R2_BUCKET_NAME`：官方校准使用的真实 R2 bucket 名称；默认值与自动创建的 `cf-free-webdav-files` 一致
-- `TRASH_RETENTION_DAYS`：回收站和文件版本的保留天数，默认 `30`，有效范围为 `1` 到 `365`
-
 `GET /usage`（需要 Basic Auth）返回当前计数和熔断状态。这些是 Worker 侧估算值；不包含直接使用 R2 控制台/API 的用量，Cloudflare 官方统计也有延迟。可参考下文的官方用量校准提升精度。
-
-## 官方用量校准
 
 ## 用量趋势
 
@@ -89,10 +125,11 @@ npx wrangler secret put FEISHU_WEBHOOK_SECRET  # 可选；仅当机器人开启�
 npx wrangler secret put SHARE_SECRET
 ```
 
-为提高精度，可创建一个具有 **Account → Account Analytics → Read** 权限的 Cloudflare API Token，并设置以下 Secret：
+## 官方用量校准
+
+为提高精度，可创建一个具有 **Account → Account Analytics → Read** 权限的 Cloudflare API Token，将 `CF_ACCOUNT_ID` 设为 Worker 普通变量，并将 Token 设为 Secret：
 
 ```bash
-npx wrangler secret put CF_ACCOUNT_ID
 npx wrangler secret put CF_API_TOKEN
 ```
 

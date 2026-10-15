@@ -29,22 +29,58 @@ Set `WEBDAV_PASSWORD` during the button flow if prompted. If the flow does not a
 
 The service returns `503` for WebDAV requests until `WEBDAV_PASSWORD` is configured. The default username is `webdav`; to change it, edit `WEBDAV_USERNAME` in `wrangler.jsonc` and deploy again. Never put the password in `wrangler.jsonc`, this README, or GitHub Actions configuration.
 
+## Configuration reference
+
+Set non-secret values in the `vars` object in `wrangler.jsonc`, then deploy. Set Secrets with `npx wrangler secret put NAME` or in the Worker’s **Settings → Variables and Secrets**. For local development, put Secret values in the ignored `.dev.vars` file.
+
+### Variables
+
+| Name | Required | Default / format | Purpose |
+| --- | --- | --- | --- |
+| `WEBDAV_USERNAME` | No | `webdav` | Basic Auth username. |
+| `QUOTA_CLASS_A_MAX` | No | `1000000`; positive number | Monthly Class A operation limit used by the write circuit breaker. |
+| `QUOTA_CLASS_B_MAX` | No | `10000000`; positive number | Monthly Class B operation limit used by the write circuit breaker. |
+| `QUOTA_STORAGE_MAX_BYTES` | No | `10737418240` (10 GiB); positive number | Storage limit in bytes used by the write circuit breaker and management page. |
+| `QUOTA_THRESHOLD_PERCENT` | No | `0.8`; a ratio greater than `0` and at most `1` | Fraction of each limit at which writes are blocked. For example, `0.8` means 80%. |
+| `R2_BUCKET_NAME` | No | `cf-free-webdav-files` | Actual bucket name queried during official usage reconciliation. Keep it aligned with the R2 bucket bound as `FILES`. |
+| `TRASH_RETENTION_DAYS` | No | `30`; integer from `1` to `365` | Days before deleted files and saved versions are removed. Invalid values use `30`. |
+| `FEISHU_ALERT_PERCENT` | No | `70`; percentage greater than `0` and at most `100` | Feishu warning threshold. Invalid values disable notifications. This does not change the write circuit breaker threshold. |
+| `CF_ACCOUNT_ID` | Only for official reconciliation | No default; Cloudflare account ID | Account queried by the Analytics API. Set as a Worker variable. |
+
+Quota limits are configurable caps, not billing controls. Invalid quota values fall back to the defaults shown above. `QUOTA_THRESHOLD_PERCENT` is a ratio, while `FEISHU_ALERT_PERCENT` is a percentage from 1 to 100.
+
+### Secrets
+
+| Name | Required | Purpose |
+| --- | --- | --- |
+| `WEBDAV_PASSWORD` | Yes | Basic Auth password. The service does not accept WebDAV or management requests until it is set. |
+| `CF_API_TOKEN` | Only for official reconciliation | Cloudflare API token with **Account → Account Analytics → Read** permission. Configure together with `CF_ACCOUNT_ID`. |
+| `SHARE_SECRET` | No | Separate HMAC signing key for share links. If omitted, `WEBDAV_PASSWORD` is used; changing the signing key invalidates existing links. |
+| `FEISHU_WEBHOOK_URL` | No | Feishu custom bot webhook. Setting it enables threshold notifications during reconciliation. |
+| `FEISHU_WEBHOOK_SECRET` | No | Feishu signing secret; required only when signature verification is enabled for the bot. |
+
+For example, configure the required password and optional Cloudflare token with:
+
+```bash
+npx wrangler secret put WEBDAV_PASSWORD
+npx wrangler secret put CF_API_TOKEN
+```
+
+### Cloudflare bindings and scheduled work
+
+| Name | Requirement | Type | Purpose |
+| --- | --- | --- | --- |
+| `FILES` | Required for file operations | R2 bucket binding | Stores user files, trash, and versions. Declared under `r2_buckets` in `wrangler.jsonc`; the project uses Wrangler automatic resource provisioning. |
+| `USAGE_STORE` | Required for management, quota, and share features | Durable Object binding | Stores quota counters, usage history, and managed share-link state. Its binding and SQLite migration are declared in `wrangler.jsonc`. |
+| Cron `0 */6 * * *` | Enabled by default | Scheduled Worker trigger | Runs trash cleanup and official usage reconciliation every six hours (UTC). It is declared under `triggers.crons` in `wrangler.jsonc`. |
+
+The `FILES` and `USAGE_STORE` bindings are provisioned by Wrangler and are not configured as variables or Secrets. If automatic R2 provisioning is unavailable, create/enable the R2 bucket in Cloudflare and make sure `R2_BUCKET_NAME` matches its name.
+
 ## Free quota circuit breaker
 
 The Worker tracks R2 Class A operations, Class B operations, and an estimated storage total in a Durable Object. When a metric reaches its configured threshold, write operations return `507 Insufficient Storage`; reads and deletes remain available so you can clean up data. Counters reset automatically at the start of each month.
 
-Configure thresholds in `wrangler.jsonc` `vars`:
-
-- `QUOTA_CLASS_A_MAX`: default `1000000`
-- `QUOTA_CLASS_B_MAX`: default `10000000`
-- `QUOTA_STORAGE_MAX_BYTES`: default `10737418240`
-- `QUOTA_THRESHOLD_PERCENT`: default `0.8`, meaning writes stop at 80% of each limit
-- `R2_BUCKET_NAME`: the real R2 bucket name used by official reconciliation; the default matches automatic provisioning (`cf-free-webdav-files`)
-- `TRASH_RETENTION_DAYS`: retention period for deleted files and versions; defaults to `30` and accepts values from `1` to `365`
-
 `GET /usage` (Basic Auth required) returns the current counters and whether the breaker is open. These are Worker-side estimates; direct R2 console/API access and R2 analytics lag are not included.
-
-## Official usage reconciliation
 
 ## Usage trend
 
@@ -89,12 +125,11 @@ The management page can generate signed download links for individual files. New
 npx wrangler secret put SHARE_SECRET
 ```
 
-## Web management page
+## Official usage reconciliation
 
-To improve accuracy, configure a Cloudflare API Token with **Account → Account Analytics → Read** permission, then set these Secrets:
+To improve accuracy, configure a Cloudflare API Token with **Account → Account Analytics → Read** permission, set `CF_ACCOUNT_ID` as a Worker variable, and add the token as a Secret:
 
 ```bash
-npx wrangler secret put CF_ACCOUNT_ID
 npx wrangler secret put CF_API_TOKEN
 ```
 
