@@ -836,7 +836,7 @@ export function webPage(nonce: string): string {
     <div id="bulk-actions" class="bulk-actions"></div>
     <div id="upload-progress" class="upload-progress"><span>正在上传</span><div class="bar"><div id="upload-bar" class="fill" style="width:0"></div></div></div>
     <div class="tablewrap">
-      <table class="table"><thead id="table-head"><tr><th></th><th>名称</th><th>大小</th><th>创建时间</th><th>修改时间</th><th>操作</th></tr></thead><tbody id="rows"><tr><td colspan="6" class="empty-cell">正在加载文件列表…</td></tr></tbody></table>
+      <table id="table" class="table"><thead id="table-head"><tr><th></th><th>名称</th><th>大小</th><th>创建时间</th><th>修改时间</th><th>操作</th></tr></thead><tbody id="rows"><tr><td colspan="6" class="empty-cell">正在加载文件列表…</td></tr></tbody></table>
     </div>
     <button id="load-more" class="load-more" hidden>加载更多搜索结果</button>
   </section>
