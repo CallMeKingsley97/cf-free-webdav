@@ -1,7 +1,7 @@
 import { parseDavPath } from "../http/path.js";
 import { signManagedSharePath } from "../share/link.js";
 import type { ShareStoreClient } from "../share/record.js";
-import { statResource } from "../storage/r2.js";
+import { backendById, usesLegacyR2Mount } from "../storage/backend.js";
 
 interface ShareRequest {
   path: string;
@@ -17,8 +17,6 @@ export async function apiShare(request: Request, env: Env, shares: ShareStoreCli
   if (!secret) {
     return Response.json({ error: "Set the WEBDAV_PASSWORD secret before using WebDAV." }, { status: 503 });
   }
-  if (!env.FILES) return Response.json({ error: "R2 bucket is not configured." }, { status: 503 });
-
   let body: ShareRequest;
   try {
     body = (await request.json()) as ShareRequest;
@@ -45,8 +43,9 @@ export async function apiShare(request: Request, env: Env, shares: ShareStoreCli
     return Response.json({ error: "Only files can be shared." }, { status: 400 });
   }
 
-  const resource = await statResource(env.FILES, target);
-  if (!resource || resource.collection) {
+  const backend = backendById(env, target.segments[0]) || (usesLegacyR2Mount(env) ? backendById(env, "r2") : null);
+  const resource = backend ? await backend.stat(usesLegacyR2Mount(env) ? target.key : target.segments.slice(1).join("/")) : null;
+  if (!backend || !resource || resource.collection) {
     return Response.json({ error: "File not found." }, { status: 404 });
   }
 

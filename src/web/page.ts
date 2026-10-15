@@ -191,6 +191,7 @@ const style = `
 const script = `
   const el = (id) => document.getElementById(id);
   let currentPath = [];
+  let backendOptions = [];
   let currentEntries = [];
   let currentTrash = [];
   let currentShares = [];
@@ -345,20 +346,24 @@ const script = `
       const name = item.collection
         ? '<a href="#" data-dir="' + safeKey + '">' + dirIcon + esc(item.name) + '</a>'
         : '<a href="' + safeHref + '" target="_blank" rel="noopener">' + fileIcon + esc(item.name) + '</a>';
+      const source = '<small class="subline">来源：' + esc(item.backendLabel || item.backend || '未知后端') + '</small>';
       const shareButton = item.collection ? '' : '<button data-share="' + safeKey + '" aria-label="分享 ' + attr(item.name) + '">分享</button>';
       const previewButton = !item.collection && isPreviewable(item) ? '<button data-preview="' + safeKey + '" aria-label="预览 ' + attr(item.name) + '">预览</button>' : '';
       const action = '<button data-rename="' + safeKey + '" aria-label="重命名 ' + attr(item.name) + '">重命名</button>' +
         '<button data-delete="' + safeKey + '" aria-label="移至回收站 ' + attr(item.name) + '">删除</button>' + previewButton + shareButton;
-      return '<tr class="row"><td data-label="选择"><input class="row-check" type="checkbox" data-select="' + safeKey + '"' + checked + ' aria-label="选择 ' + attr(item.name) + '"></td><td data-label="名称">' + name + '</td><td data-label="大小">' + (item.collection ? '—' : fmtSize(item.size)) + '</td><td data-label="创建时间">' +
+      return '<tr class="row"><td data-label="选择"><input class="row-check" type="checkbox" data-select="' + safeKey + '"' + checked + ' aria-label="选择 ' + attr(item.name) + '"></td><td data-label="名称">' + name + source + '</td><td data-label="大小">' + (item.collection ? '—' : fmtSize(item.size)) + '</td><td data-label="创建时间">' +
         (item.createdAt ? fmtDate(item.createdAt) : '—') + '</td><td data-label="修改时间">' + fmtDate(item.uploaded) + '</td><td data-label="操作">' + action + '</td></tr>';
     }).join('');
     renderBulkState();
   }
 
   async function upload(file) {
+    const backend = currentPath[0] || el('upload-backend').value;
+    if (!backend) throw new Error('没有可用的存储后端');
+    const target = currentPath.length ? [...currentPath, file.name] : [backend, file.name];
     await new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open('PUT', davPath([...currentPath, file.name]));
+      xhr.open('PUT', davPath(target));
       xhr.setRequestHeader('content-type', file.type || 'application/octet-stream');
       xhr.upload.onprogress = (event) => {
         if (!event.lengthComputable) return;
@@ -371,7 +376,7 @@ const script = `
       xhr.send(file);
     });
     el('upload-label-text').textContent = '已上传 ' + file.name;
-    notify('已上传：' + file.name);
+    notify('已上传到 ' + (backend === 'onedrive' ? 'OneDrive' : backend === 'r2' ? 'Cloudflare R2' : backend) + '：' + file.name);
   }
 
   function setUploadProgress(show) {
@@ -380,7 +385,7 @@ const script = `
   }
 
   async function remove(key) {
-    if (!confirm('将 ' + key.split('/').pop() + ' 移至回收站？')) return false;
+    if (!confirm('删除 ' + key.split('/').pop() + '？')) return false;
     await davRequest(key.split('/'), 'DELETE');
     notify('已删除');
     return true;
@@ -401,7 +406,9 @@ const script = `
     const name = prompt('新建文件夹名称：');
     if (!name) return;
     if (name.includes('/') || name.includes(String.fromCharCode(92))) { notify('名称不能包含 / 或反斜杠', true); return; }
-    await davRequest([...currentPath, name], 'MKCOL');
+    const backend = currentPath[0] || el('upload-backend').value;
+    if (!backend) throw new Error('没有可用的存储后端');
+    await davRequest(currentPath.length ? [...currentPath, name] : [backend, name], 'MKCOL');
     notify('文件夹已创建');
   }
 
@@ -630,6 +637,14 @@ const script = `
       if (!response.ok) throw new Error(data.error || '加载失败');
       if (requestView !== viewRequest) return;
       currentPath = data.path || [];
+      backendOptions = data.backends || backendOptions;
+      const select = el('upload-backend');
+      if (select) {
+        const options = backendOptions.map((item) => '<option value="' + attr(item.id) + '">' + esc(item.label) + '</option>').join('');
+        select.innerHTML = options || '<option value="">未配置后端</option>';
+        select.disabled = currentPath.length > 0;
+        if (currentPath.length) select.value = currentPath[0];
+      }
       renderQuota(data.usage);
       if (currentView === 'files') {
         renderBreadcrumbs(data.path || []);
@@ -692,11 +707,8 @@ const script = `
   el('sync').addEventListener('click', async () => {
     el('sync').disabled = true;
     try {
-      const response = await fetch('/usage/reconcile-official', { method: 'POST' });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || '同步失败');
-      notify('官方用量已同步');
-      loadFiles();
+      await loadFiles();
+      notify('用量已刷新');
     } catch (error) { notify(error.message || '同步失败', true); }
     finally { el('sync').disabled = false; }
   });
@@ -834,8 +846,8 @@ export function webPage(nonce: string): string {
 <body>
 <main class="app">
   <header class="page-header">
-    <div class="brand"><div class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7.5A2.5 2.5 0 0 1 7.5 5H11l2 2h3.5A2.5 2.5 0 0 1 19 9.5v7a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 5 16.5z"/><path d="M5 10h14"/><path d="M9 14h6"/></svg></div><div><p class="eyebrow">OBJECT STORAGE · CONTROL CENTER</p><h1>CF Free WebDAV</h1><div class="sub">浏览和管理 R2 文件，随时掌握存储用量</div></div></div>
-    <div class="actions"><button id="refresh"><svg class="btn-icon" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.8-3L4 10"/><path d="M4 5v5h5M4 13a8 8 0 0 0 14.8 3L20 14"/><path d="M20 19v-5h-5"/></svg>刷新列表</button><button id="sync" class="primary"><svg class="btn-icon" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.6 9A7 7 0 0 1 18 6l2 6M4 12l2 6a7 7 0 0 0 12.4-3"/></svg>同步官方用量</button></div>
+    <div class="brand"><div class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7.5A2.5 2.5 0 0 1 7.5 5H11l2 2h3.5A2.5 2.5 0 0 1 19 9.5v7a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 5 16.5z"/><path d="M5 10h14"/><path d="M9 14h6"/></svg></div><div><p class="eyebrow">MULTI STORAGE · WEBDAV CONTROL CENTER</p><h1>CF Free WebDAV</h1><div class="sub">统一管理多个存储后端，上传时选择目标位置</div></div></div>
+    <div class="actions"><button id="refresh"><svg class="btn-icon" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.8-3L4 10"/><path d="M4 5v5h5M4 13a8 8 0 0 0 14.8 3L20 14"/><path d="M20 19v-5h-5"/></svg>刷新列表</button><button id="sync" class="primary"><svg class="btn-icon" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.6 9A7 7 0 0 1 18 6l2 6M4 12l2 6a7 7 0 0 0 12.4-3"/></svg>刷新用量</button></div>
   </header>
   <section class="overview" aria-labelledby="usage-title">
     <div class="section-heading"><h2 id="usage-title">用量概览</h2><p>当前周期的额度使用情况</p></div>
@@ -852,7 +864,7 @@ export function webPage(nonce: string): string {
       <nav id="breadcrumbs" class="breadcrumbs" aria-label="目录路径"></nav>
       <div class="toolbar-tools" id="search-tools"><label class="search"><svg viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m16 16 4.5 4.5"/></svg><input id="search" type="search" placeholder="递归搜索当前目录" aria-label="递归搜索当前目录"></label>
         <select id="sort" aria-label="排序"><option value="name">按名称</option><option value="updated">最近修改</option><option value="created">最近创建</option><option value="size">文件大小</option><option value="type">文件类型</option></select></div>
-      <div class="toolbar-tools" id="file-tools"><button id="mkdir" aria-label="新建文件夹"><svg viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M12 10.5v6M9 13.5h6"/></svg>新建文件夹</button><div class="upload"><input id="file" type="file" multiple><label class="upload-label" for="file"><svg viewBox="0 0 24 24"><path d="M12 16V4M7.5 8.5 12 4.5"/><path d="M5 14v5h14v-5"/></svg><span id="upload-label-text">上传文件</span></label></div></div>
+      <div class="toolbar-tools" id="file-tools"><button id="mkdir" aria-label="新建文件夹"><svg viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M12 10.5v6M9 13.5h6"/></svg>新建文件夹</button><select id="upload-backend" aria-label="上传目标后端"><option value="">未配置后端</option></select><div class="upload"><input id="file" type="file" multiple><label class="upload-label" for="file"><svg viewBox="0 0 24 24"><path d="M12 16V4M7.5 8.5 12 4.5"/><path d="M5 14v5h14v-5"/></svg><span id="upload-label-text">上传文件</span></label></div></div>
       <button id="empty-trash" class="danger" hidden>清空回收站</button>
     </div>
     <div id="bulk-actions" class="bulk-actions"></div>

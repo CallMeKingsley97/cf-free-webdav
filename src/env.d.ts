@@ -16,4 +16,10 @@ interface Env {
   FEISHU_ALERT_PERCENT?: string;
   R2_BUCKET_NAME?: string;
   TRASH_RETENTION_DAYS?: string;
+  ONEDRIVE_CLIENT_ID?: string;
+  ONEDRIVE_CLIENT_SECRET?: string;
+  ONEDRIVE_REFRESH_TOKEN?: string;
+  ONEDRIVE_ACCESS_TOKEN?: string;
+  ONEDRIVE_TENANT?: string;
+  ONEDRIVE_REDIRECT_URI?: string;
 }

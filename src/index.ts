@@ -6,6 +6,8 @@ import { DOUsageClient, type UsageTrendDay } from "./monitor/usage-client.js";
 import { UsageStore } from "./monitor/usage-store.js";
 import { verifyManagedSharePath, verifySharePath } from "./share/link.js";
 import { handleWebDav } from "./webdav/handler.js";
+import { handleMultiWebDav } from "./webdav/multi-handler.js";
+import { finishOneDriveAuth, startOneDriveAuth } from "./auth/onedrive.js";
 import { apiFiles } from "./web/api.js";
 import { webPage } from "./web/page.js";
 import { apiRevokeShare, apiShare, apiShares } from "./web/share-api.js";
@@ -102,7 +104,9 @@ async function handleShareDownload(request: Request, env: Env, usage: DOUsageCli
     return new Response("Invalid share link.", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
   }
 
-  return handleWebDav(request, trackedEnv(env, usage), target, usage);
+  const result = await handleMultiWebDav(request, env, target, usage);
+  if (result.status < 500) await usage.commit(0, 0, 1).catch(() => undefined);
+  return result;
 }
 
 export default {
@@ -110,6 +114,14 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/healthz" && request.method === "GET") {
       return Response.json({ status: "ok" });
+    }
+    if (url.pathname === "/auth/onedrive/start" && request.method === "GET") {
+      const denied = await requireAuthorization(request, env);
+      if (denied) return denied;
+      return startOneDriveAuth(request, env);
+    }
+    if (url.pathname === "/auth/onedrive/callback" && request.method === "GET") {
+      return finishOneDriveAuth(request, env);
     }
     if (url.pathname === "/" && request.method === "GET") {
       if (!hasCredentials(env)) {
@@ -179,7 +191,6 @@ export default {
     }
     if (url.pathname.startsWith("/share/") && request.method === "GET") {
       if (!hasCredentials(env)) return credentialError("Set the WEBDAV_PASSWORD secret before using WebDAV.");
-      if (!env.FILES) return credentialError("R2 bucket is not configured.");
       if (!env.USAGE_STORE) return credentialError("Durable Object binding is not configured.");
       return handleShareDownload(request, env, new DOUsageClient(env.USAGE_STORE));
     }
@@ -228,11 +239,11 @@ export default {
 
     const username = env.WEBDAV_USERNAME || "webdav";
     if (!(await isAuthorized(request, username, env.WEBDAV_PASSWORD || ""))) return unauthorized();
-    if (!env.FILES || !env.USAGE_STORE) {
-      return new Response("R2 bucket or Durable Object binding is not configured.", { status: 503 });
+    if (!env.USAGE_STORE) {
+      return new Response("Durable Object binding is not configured.", { status: 503 });
     }
     const usage = new DOUsageClient(env.USAGE_STORE);
-    return handleWebDav(request, trackedEnv(env, usage), path, usage);
+    return handleMultiWebDav(request, env, path, usage);
   },
   async scheduled(_event: ScheduledController, env: Env): Promise<void> {
     const usageStore = env.USAGE_STORE;
@@ -245,6 +256,6 @@ export default {
         if (releasedBytes) await client.release(releasedBytes, 0, 0);
       }
     }
-    await client.reconcileOfficial();
+    if (env.FILES && env.CF_ACCOUNT_ID && env.CF_API_TOKEN) await client.reconcileOfficial();
   },
 } satisfies ExportedHandler<Env>;

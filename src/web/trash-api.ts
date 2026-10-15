@@ -39,7 +39,10 @@ function itemResponse(item: TrashItem) {
 }
 
 export async function apiTrash(request: Request, env: Env, usage: UsageClient): Promise<Response> {
-  if (!env.FILES) return Response.json({ error: "R2 bucket is not configured." }, { status: 503 });
+  if (!env.FILES) {
+    if (request.method === "GET") return Response.json({ items: [] }, { headers: { "cache-control": "private, no-store" } });
+    return Response.json({ error: "The selected storage backend uses its provider recycle bin; custom recovery is unavailable." }, { status: 409 });
+  }
   const bucket = env.FILES;
   const retentionDays = Number(env.TRASH_RETENTION_DAYS) || 30;
   const url = new URL(request.url);

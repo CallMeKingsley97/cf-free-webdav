@@ -11,14 +11,8 @@
   "vars": {
     "WEBDAV_USERNAME": "webdav",
     "QUOTA_THRESHOLD_PERCENT": "0.8",
-    "R2_BUCKET_NAME": "cf-free-webdav-files",
     "TRASH_RETENTION_DAYS": "30"
   },
-  "r2_buckets": [
-    {
-      "binding": "FILES"
-    }
-  ],
   "durable_objects": {
     "bindings": [
       {

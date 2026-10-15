@@ -1,63 +1,44 @@
-import { parseDavPath } from "../http/path.js";
-import { listChildren, StorageLimitError, statResource } from "../storage/r2.js";
 import type { UsageClient } from "../monitor/limited-r2.js";
-import { QuotaExceededError } from "../monitor/quota.js";
+import { listBackendFiles } from "../webdav/multi-handler.js";
+import { usesLegacyR2Mount } from "../storage/backend.js";
 
-interface ApiEntry {
-  key: string;
-  name: string;
-  collection: boolean;
-  size: number;
-  uploaded: string;
-  createdAt: string | null;
-  contentType: string;
-  href: string;
-}
-
-function fileHref(segments: string[], collection: boolean): string {
-  const encoded = segments.map((segment) => encodeURIComponent(segment)).join("/");
+function fileHref(path: string, collection: boolean): string {
+  const encoded = path.split("/").filter(Boolean).map((segment) => encodeURIComponent(segment)).join("/");
   return `/dav/${encoded}${collection && encoded ? "/" : ""}`;
 }
 
 export async function apiFiles(request: Request, env: Env, usage: UsageClient): Promise<Response> {
-  if (!env.FILES) {
-    return Response.json({ error: "R2 bucket is not configured." }, { status: 503 });
-  }
-
   const requested = new URL(request.url).searchParams.get("path") || "";
-  const path = parseDavPath(`/dav/${requested.replace(/^\/+/, "")}${requested ? "/" : ""}`);
-  if (!path) return Response.json({ error: "Invalid path." }, { status: 400 });
-
   try {
-    const resource = await statResource(env.FILES, path);
-    if (!resource || !resource.collection) {
-      return Response.json({ error: "Directory not found." }, { status: 404 });
-    }
-    const children = await listChildren(env.FILES, path.key);
-    const entries: ApiEntry[] = children.map((item) => ({
-      key: item.key,
-      name: item.key.slice(item.key.lastIndexOf("/") + 1),
-      collection: item.collection,
-      size: item.size,
-      uploaded: item.uploaded.toISOString(),
-      createdAt: item.createdAt?.toISOString() || null,
-      contentType: item.contentType,
-      href: fileHref(item.key.split("/"), item.collection),
-    }));
+    const result = await listBackendFiles(env, requested.replace(/^\/+/, ""));
+    const entries = result.entries.map((item) => {
+      const key = usesLegacyR2Mount(env) ? item.path : item.path ? `${item.backend}/${item.path}` : item.backend;
+      return {
+        key,
+        name: item.name || item.backend,
+        backend: item.backend,
+        backendLabel: item.backend === "onedrive" ? "Microsoft OneDrive" : "Cloudflare R2",
+        collection: item.collection,
+        size: item.size,
+        uploaded: item.uploaded.toISOString(),
+        createdAt: item.createdAt?.toISOString() || null,
+        contentType: item.contentType,
+        href: fileHref(key, item.collection),
+      };
+    });
     return Response.json(
       {
-        path: path.segments,
+        path: result.path,
         entries: entries.sort((left, right) =>
           left.collection !== right.collection ? Number(right.collection) - Number(left.collection) : left.name.localeCompare(right.name),
         ),
         usage: await usage.summary(),
+        backends: result.path.length ? undefined : entries.map((entry) => ({ id: entry.backend, label: entry.backendLabel })),
       },
       { headers: { "cache-control": "private, no-store" } },
     );
   } catch (error) {
-    if (error instanceof StorageLimitError) return Response.json({ error: error.message }, { status: 507 });
-    if (error instanceof QuotaExceededError) return Response.json({ error: error.message }, { status: 503 });
     console.error(JSON.stringify({ level: "error", event: "web_files_failed" }));
-    return Response.json({ error: "Unable to list files." }, { status: 500 });
+    return Response.json({ error: error instanceof Error ? error.message : "Unable to list files." }, { status: 502 });
   }
 }

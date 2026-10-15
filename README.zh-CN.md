@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-基于 Cloudflare Workers 和 R2 的单用户 WebDAV 服务。Worker 负责 WebDAV 请求、HTTPS 和 Basic Auth；私有 R2 bucket 保存文件。项目不需要常驻服务器或数据库。
+基于 Cloudflare Workers 的多存储后端单用户 WebDAV 服务。Worker 负责 WebDAV 请求、HTTPS、Basic Auth 和管理页面；文件可以保存在可选的 R2 或 OneDrive 后端。项目不需要常驻服务器。
 
 如果这个项目对你有帮助，欢迎在 [GitHub 给项目点个 Star](https://github.com/CallMeKingsley97/cf-free-webdav)，支持后续改进。
 
@@ -17,7 +17,31 @@
 3. 选择 GitHub 账户和已有的 `cf-free-webdav` 仓库，选择 `main` 分支并完成创建。这个流程会创建 Cloudflare Worker 并连接现有仓库，不会要求创建 GitHub 仓库副本。
 4. 部署完成后，在该 Worker 的 **Settings → Variables and Secrets** 中新增 `WEBDAV_PASSWORD`，类型选择 **Secret**，填写强随机密码并部署新版本。
 
-后续推送到 `main` 会自动构建和部署。WebDAV 地址为 `https://<worker-name>.<account-subdomain>.workers.dev/dav/`，用户名默认为 `webdav`。首次部署的 R2 bucket 由 Wrangler 根据配置创建；该功能要求 Wrangler `4.45.0+`，目前处于[自动资源创建 Beta](https://developers.cloudflare.com/changelog/2025-10-24-automatic-resource-provisioning/)。
+后续推送到 `main` 会自动构建和部署。WebDAV 地址为 `https://<worker-name>.<account-subdomain>.workers.dev/dav/`，用户名默认为 `webdav`。项目不再要求 R2 绑定；未配置存储后端时 Worker 仍可部署，但文件列表为空。
+
+### 配置 OneDrive 后端
+
+在 Microsoft Entra 中注册一个应用，添加 Web 重定向地址：
+
+```text
+https://<worker-domain>/auth/onedrive/callback
+```
+
+在 Worker Secrets 中设置：
+
+```bash
+npx wrangler secret put ONEDRIVE_CLIENT_ID
+npx wrangler secret put ONEDRIVE_CLIENT_SECRET
+npx wrangler secret put ONEDRIVE_TENANT
+```
+
+部署后访问 `/auth/onedrive/start` 完成授权，将回调页显示的 refresh token 设置为：
+
+```bash
+npx wrangler secret put ONEDRIVE_REFRESH_TOKEN
+```
+
+管理页根目录会显示 `onedrive/` 挂载目录；上传时可以选择目标存储后端。OneDrive 文件实际保存在 `CF Free WebDAV` 文件夹下。
 
 ### 部署为一个新的项目副本
 
@@ -29,28 +53,24 @@
 
 服务在没有密码 Secret 时会对 `/dav/` 返回 `503` 并拒绝访问；设置 Secret 后即可使用。默认用户名为 `webdav`；需要更改时，修改 `wrangler.jsonc` 中的 `WEBDAV_USERNAME` 并重新部署。不要把密码写进 `wrangler.jsonc`、README 或 GitHub Actions 配置。
 
-## 免费额度熔断
+## 用量统计
 
-Worker 会在 Durable Object 中记录 R2 Class A 操作数、Class B 操作数和存储量估算值。任一指标达到阈值后，写入操作返回 `507 Insufficient Storage`；读取和删除仍可用，便于清理数据。计数每月自动重置。
+Worker 会在 Durable Object 中记录操作数和存储估算。外部存储服务的实际免费额度由服务商控制，项目不会读取第三方官方剩余额度。
 
 在 `wrangler.jsonc` 的 `vars` 中配置阈值：
 
-- `QUOTA_CLASS_A_MAX`：默认 `1000000`
-- `QUOTA_CLASS_B_MAX`：默认 `10000000`
-- `QUOTA_STORAGE_MAX_BYTES`：默认 `10737418240`
 - `QUOTA_THRESHOLD_PERCENT`：默认 `0.8`，即达到各上限的 80% 后停止写入
-- `R2_BUCKET_NAME`：官方校准使用的真实 R2 bucket 名称；默认值与自动创建的 `cf-free-webdav-files` 一致
 - `TRASH_RETENTION_DAYS`：回收站和文件版本的保留天数，默认 `30`，有效范围为 `1` 到 `365`
 
 `GET /usage`（需要 Basic Auth）返回当前计数和熔断状态。这些是 Worker 侧估算值；不包含直接使用 R2 控制台/API 的用量，Cloudflare 官方统计也有延迟。可参考下文的官方用量校准提升精度。
 
-## 官方用量校准
+## 官方用量校准（仅 R2 后端）
 
 ## 用量趋势
 
 Durable Object 会在内置 SQLite 表中按天记录用量快照（A/B 类操作、存储、熔断状态）。管理页面的每张额度卡片下方会展示最近 30 天的迷你趋势图，方便看出额度消耗速度。快照在每次写操作和官方校准时记录，保留 60 天。
 
-## 熔断预警（飞书）
+## 熔断预警（飞书，主要用于 R2 后端）
 
 为避免写入悄悄被熔断，官方校准时若任一指标超过预警百分比，Worker 会推送到飞书自定义机器人 webhook。配置以下 Secret：
 
@@ -65,15 +85,15 @@ npx wrangler secret put FEISHU_WEBHOOK_SECRET  # 可选；仅当机器人开启�
 
 ## Web 管理页面
 
-访问 Worker 根路径并输入 WebDAV 用户名和密码，可以浏览目录、新建文件夹、重命名、下载、上传和删除文件。页面支持递归搜索、排序、多选批量操作，以及图片、音频、视频和小于 1 MiB 的纯文本预览。页面展示 R2 存储与 Class A/B 操作的免费额度、当前用量和使用进度；“同步官方用量”按钮会立即触发一次官方用量校准。上传时显示实时进度，也可以把文件直接拖拽到文件列表上传。
+访问 Worker 根路径并输入 WebDAV 用户名和密码，可以浏览多个后端目录、新建文件夹、重命名、下载、上传和删除文件。页面支持递归搜索、排序、多选批量操作，以及图片、音频、视频和小于 1 MiB 的纯文本预览。文件列表会显示来源后端，上传时可以选择目标后端。
 
-页面通过 `/api/files` 获取目录列表和用量状态，复用同一个 Basic Auth 会话。存储进度按配置的 `QUOTA_STORAGE_MAX_BYTES` 展示，官方校准结果会影响展示值。
+页面通过 `/api/files` 获取目录列表和用量状态，复用同一个 Basic Auth 会话。
 
 ### 回收站与版本恢复
 
 管理页的“回收站”视图可以恢复已删除的文件和目录，也可以单条或批量永久删除、清空回收站。WebDAV `DELETE` 会移入回收站；覆盖文件以及覆盖式 `COPY`、`MOVE` 会保留被替换内容作为历史版本。恢复删除项要求原路径空闲；恢复历史版本会把当前内容另存为新版本。项目每 6 小时清理超过 `TRASH_RETENTION_DAYS` 的内容。
 
-回收站和历史版本仍占用 R2 存储，并计入用量；永久删除或到期清理才会释放空间。归档文件会产生额外 R2 Class A 操作，配额面板会计入这些操作。系统保留 `.__cf_free_webdav__` 作为内部对象前缀，不能用作用户文件目录。
+外部后端的删除由服务商回收站或删除策略处理；当前 OneDrive 后端不使用项目自建 R2 回收站。
 
 ## 分享链接
 
@@ -98,7 +118,7 @@ npx wrangler secret put CF_API_TOKEN
 
 Worker 会通过定时任务（每 6 小时）调用 Cloudflare GraphQL Analytics API（`r2OperationsAdaptiveGroups` 和 `r2StorageAdaptiveGroups`），将官方口径的用量与本地计数对比后取较大值。这样即使有绕过 Worker 的 R2 访问，也不会低估用量。阈值可通过 `wrangler.jsonc` 中的 `QUOTA_THRESHOLD_PERCENT` 配置（默认 `0.8`）。
 
-Deploy to Cloudflare 按钮要求源仓库公开。账号需要启用 Workers 和 R2；若账号或部署流程尚未提供自动创建资源能力，请先在 Cloudflare 中开通 R2，再使用命令行部署。也可从本地终端部署：
+Deploy to Cloudflare 按钮要求源仓库公开。部署不需要启用 R2。也可从本地终端部署：
 
 ```bash
 npm install
@@ -106,7 +126,7 @@ npx wrangler login
 npm run deploy:setup
 ```
 
-脚本会先部署 Worker 并创建 R2 bucket，然后由 Wrangler 安全地提示输入密码，最后发布设置了 Secret 的版本。之后更新代码可运行 `npm run deploy`。
+脚本会部署 Worker，然后由 Wrangler 安全地提示输入密码，最后发布设置了 Secret 的版本。之后更新代码可运行 `npm run deploy`。
 
 ## 本地开发
 
@@ -118,7 +138,7 @@ npm run typecheck
 npm run dev
 ```
 
-本地开发使用 Wrangler 的本地 R2 模拟存储；本地文件不会自动同步到 Cloudflare。`.dev.vars` 已加入 `.gitignore`。
+本地开发使用外部后端配置；`.dev.vars` 已加入 `.gitignore`。没有配置 OneDrive 或 R2 时，Worker 仍可启动，但不会显示文件后端。
 `npm run dev`、`npm run deploy` 和 `npm run typecheck` 会先从 `wrangler.jsonc` 生成本地类型文件 `worker-configuration.d.ts`；该文件不提交到 Git。
 
 ## 支持范围
@@ -151,7 +171,7 @@ npm run dev
 
 ```text
 .
-  wrangler.jsonc       Cloudflare Worker、R2 binding 和变量配置
+  wrangler.jsonc       Cloudflare Worker 和变量配置
   package.json         开发、类型生成、本地运行和部署命令
   tsconfig.json        TypeScript 严格类型检查
   .dev.vars.example    本地开发的 Secret 示例，不存储真实密码

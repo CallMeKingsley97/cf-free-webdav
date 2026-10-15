@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-A single-user WebDAV service built with Cloudflare Workers and R2. The Worker handles WebDAV requests, HTTPS, and Basic Authentication. Files are stored in a private R2 bucket. No always-on server or database is required.
+A single-user multi-backend WebDAV service built with Cloudflare Workers. The Worker handles WebDAV requests, HTTPS, Basic Authentication, and the management page. Files can be stored in optional R2 or OneDrive backends; no always-on server is required.
 
 If this project is useful to you, please consider giving it a star on [GitHub](https://github.com/CallMeKingsley97/cf-free-webdav).
 
@@ -17,7 +17,20 @@ To deploy this repository and automatically publish future commits, connect the 
 3. Select your GitHub account, choose the existing `cf-free-webdav` repository and its `main` branch, then finish setup. This creates a Cloudflare Worker connected to the existing repository; it does not create a GitHub repository copy.
 4. After deployment, open the Worker’s **Settings → Variables and Secrets** and add `WEBDAV_PASSWORD` as a **Secret**. Use a strong, unique password, then deploy the updated version.
 
-Future pushes to `main` will trigger builds and deployments. The WebDAV URL is `https://<worker-name>.<account-subdomain>.workers.dev/dav/`; the default username is `webdav`. Wrangler creates the R2 bucket from the binding configuration. Automatic resource provisioning requires Wrangler `4.45.0` or later and is currently in [Beta](https://developers.cloudflare.com/changelog/2025-10-24-automatic-resource-provisioning/).
+Future pushes to `main` will trigger builds and deployments. The WebDAV URL is `https://<worker-name>.<account-subdomain>.workers.dev/dav/`; the default username is `webdav`. R2 is optional and is no longer required for deployment.
+
+### Configure OneDrive
+
+Register an application in Microsoft Entra and add `https://<worker-domain>/auth/onedrive/callback` as a web redirect URI. Set the following Worker secrets, then open `/auth/onedrive/start` while authenticated:
+
+```bash
+npx wrangler secret put ONEDRIVE_CLIENT_ID
+npx wrangler secret put ONEDRIVE_CLIENT_SECRET
+npx wrangler secret put ONEDRIVE_TENANT
+npx wrangler secret put ONEDRIVE_REFRESH_TOKEN
+```
+
+The callback page supplies the refresh token if it has not been configured yet. The management page exposes each configured backend as a mount directory and lets uploads choose their destination. OneDrive files are stored below `CF Free WebDAV` in the account.
 
 ### Deploy a new project copy
 
@@ -29,17 +42,13 @@ Set `WEBDAV_PASSWORD` during the button flow if prompted. If the flow does not a
 
 The service returns `503` for WebDAV requests until `WEBDAV_PASSWORD` is configured. The default username is `webdav`; to change it, edit `WEBDAV_USERNAME` in `wrangler.jsonc` and deploy again. Never put the password in `wrangler.jsonc`, this README, or GitHub Actions configuration.
 
-## Free quota circuit breaker
+## Usage accounting
 
-The Worker tracks R2 Class A operations, Class B operations, and an estimated storage total in a Durable Object. When a metric reaches its configured threshold, write operations return `507 Insufficient Storage`; reads and deletes remain available so you can clean up data. Counters reset automatically at the start of each month.
+The Worker tracks operation counts and an estimated storage total in a Durable Object. Actual free limits for an external provider remain controlled by that provider.
 
 Configure thresholds in `wrangler.jsonc` `vars`:
 
-- `QUOTA_CLASS_A_MAX`: default `1000000`
-- `QUOTA_CLASS_B_MAX`: default `10000000`
-- `QUOTA_STORAGE_MAX_BYTES`: default `10737418240`
 - `QUOTA_THRESHOLD_PERCENT`: default `0.8`, meaning writes stop at 80% of each limit
-- `R2_BUCKET_NAME`: the real R2 bucket name used by official reconciliation; the default matches automatic provisioning (`cf-free-webdav-files`)
 - `TRASH_RETENTION_DAYS`: retention period for deleted files and versions; defaults to `30` and accepts values from `1` to `365`
 
 `GET /usage` (Basic Auth required) returns the current counters and whether the breaker is open. These are Worker-side estimates; direct R2 console/API access and R2 analytics lag are not included.
@@ -67,13 +76,13 @@ npx wrangler secret put FEISHU_WEBHOOK_SECRET # Optional; required only if the b
 
 Open the Worker root URL and sign in with your WebDAV username and password to browse directories, create folders, rename, download, upload, and delete files. The page supports recursive search, sorting, multi-select actions, and previews for images, audio, video, and plain text files smaller than 1 MiB. It shows R2 storage and Class A/B operation allowances, current usage, and progress bars. The "Sync official usage" button triggers an immediate official usage reconciliation. Uploads show live progress, and you can drag files onto the file list to upload them.
 
-The page calls `/api/files` for directory listings and usage state and reuses the same Basic Auth session. Storage progress follows the configured `QUOTA_STORAGE_MAX_BYTES`; official reconciliation affects the displayed usage.
+The page calls `/api/files` for directory listings and usage state and reuses the same Basic Auth session. Each entry shows its storage backend, and uploads can choose a backend at the root of the file view.
 
 ### Trash and file versions
 
 The Trash view can restore deleted files and collections, permanently delete selected items, or empty the trash. WebDAV `DELETE` moves resources to trash. Replacing a file, or overwriting a destination with `COPY` or `MOVE`, retains the replaced content as a version. Restoring a deleted item requires its original path to be free; restoring a version archives the current content as a new version. Items expire after `TRASH_RETENTION_DAYS` and are cleaned up every six hours.
 
-Trash and versions remain in R2 and count toward storage usage. Permanent deletion or expiration releases that space. Archiving generates additional R2 Class A operations, which are included in the usage estimate. The `.__cf_free_webdav__` object prefix is reserved for internal data and cannot be used as a user directory.
+External backends use their own recycle-bin and version policies. The OneDrive backend does not use the old R2 archive prefix.
 
 ## Share links
 
@@ -100,7 +109,7 @@ npx wrangler secret put CF_API_TOKEN
 
 A scheduled cron job runs every 6 hours and queries the Cloudflare GraphQL Analytics API (`r2OperationsAdaptiveGroups` and `r2StorageAdaptiveGroups`). It compares official usage against local counters and takes the higher value, preventing under-counting when R2 is accessed outside the Worker. Configure `QUOTA_THRESHOLD_PERCENT` in `wrangler.jsonc` (default `0.8`) to control when writes stop.
 
-The Deploy to Cloudflare button requires a public source repository. Your Cloudflare account must have Workers and R2 enabled. If automatic resource provisioning is unavailable for your account or deployment flow, enable R2 in Cloudflare and deploy from a local terminal instead:
+The Deploy to Cloudflare button requires a public source repository. R2 is optional. Deploy from a local terminal with:
 
 ```bash
 npm install
@@ -108,7 +117,7 @@ npx wrangler login
 npm run deploy:setup
 ```
 
-The setup script deploys the Worker and creates the R2 bucket, prompts for the password through Wrangler, then deploys a version with the Secret configured. For later code updates, run `npm run deploy`.
+The setup script deploys the Worker, prompts for the password through Wrangler, then deploys a version with the Secret configured. For later code updates, run `npm run deploy`.
 
 ## Local development
 
@@ -120,7 +129,7 @@ npm run typecheck
 npm run dev
 ```
 
-Wrangler uses a local R2 simulation during development; local files are not synchronized with Cloudflare. `.dev.vars` is ignored by Git. The `dev`, `deploy`, and `typecheck` scripts generate `worker-configuration.d.ts` from `wrangler.jsonc`; this generated file is not committed.
+Local development uses the configured external backend. `.dev.vars` is ignored by Git. The `dev`, `deploy`, and `typecheck` scripts generate `worker-configuration.d.ts` from `wrangler.jsonc`; this generated file is not committed.
 
 ## Supported WebDAV methods
 
