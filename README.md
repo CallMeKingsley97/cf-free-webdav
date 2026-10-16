@@ -125,6 +125,15 @@ The management page can generate signed download links for individual files. New
 npx wrangler secret put SHARE_SECRET
 ```
 
+## Upload inbox, file map, and folder pages
+
+- **Upload inbox**: create a link for the current folder with a 1-, 7-, or 30-day lifetime. Visitors can upload but cannot browse or download. Each file is limited to 100 MB and each link accepts up to 100 files. Uploads stay in a hidden staging area until you keep or delete them from the Inbox view. Keeping a file adds a suffix when its destination name already exists, so it never overwrites another file.
+- Inbox URLs are signed with `SHARE_SECRET`, falling back to `WEBDAV_PASSWORD`; changing the signing secret invalidates existing inbox links. Active links can be copied again from the management view.
+- **File map**: open File Map from the file view to recursively scan the current folder in pages, up to 10,000 files. Tile area can represent size, file count, or recent modification activity; colors can represent size, type, or modification time. Select a folder to drill down or a file to open it. Larger folders show the scanned portion, and you can continue from a subfolder.
+- **Folder page**: publish a photo wall or file showcase for the current folder. The published file list is a snapshot with up to 300 supported files. Photo walls embed only JPEG, PNG, GIF, WebP, and AVIF images. File showcases additionally support PDF, TXT, and MD downloads. HTML, scripts, SVG, and other types are excluded. Revoke pages from the Public Pages view.
+
+These features need no additional Cloudflare bindings. Inbox links, pending uploads, and published snapshots use the existing `USAGE_STORE` Durable Object.
+
 ## Official usage reconciliation
 
 To improve accuracy, configure a Cloudflare API Token with **Account → Account Analytics → Read** permission, set `CF_ACCOUNT_ID` as a Worker variable, and add the token as a Secret:
@@ -198,7 +207,8 @@ Authentication uses HTTPS Basic Authentication. The R2 bucket remains private an
 src/
   auth/       Basic Authentication
   http/       WebDAV path parsing and HTTP/XML responses
-  web/        Web management page and file/usage/share JSON API
+  web/        Web management page and file/usage/share/inbox/gallery JSON APIs
+  features/   Persistent record types for inboxes and folder pages
   share/      Signed share link signing and verification
   monitor/    Quota tracking, Durable Object usage store, and reconciliation
   notify/     Feishu threshold alerts

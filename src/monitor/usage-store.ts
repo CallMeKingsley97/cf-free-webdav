@@ -12,12 +12,22 @@ import {
 import { fetchOfficialUsage, startOfMonthISO } from "./analytics.js";
 import { notifyThreshold } from "../notify/threshold.js";
 import type { ShareCreateInput } from "../share/record.js";
+import type { GalleryRecord, InboxItemRecord, InboxRecord } from "../features/records.js";
+import { RESERVED_ROOT } from "../http/path.js";
 
 const STATE_KEY = "r2-usage-state";
 const RESERVATIONS_KEY = "r2-usage-reservations";
 const COMMITTED_RESERVATIONS_KEY = "r2-usage-committed-reservations";
 const SNAPSHOT_RETENTION_DAYS = 60;
 const RESERVATION_TTL_MS = 60 * 60 * 1000;
+const INBOX_INDEX_KEY = "feature-inbox-index";
+const INBOX_ITEMS_PREFIX = "feature-inbox-items:";
+const INBOX_RECORD_PREFIX = "feature-inbox:";
+const GALLERY_INDEX_KEY = "feature-gallery-index";
+const GALLERY_RECORD_PREFIX = "feature-gallery:";
+const MAX_INBOX_LINKS = 500;
+const MAX_INBOX_UPLOADS = 100;
+const MAX_GALLERIES = 500;
 
 interface QuotaReservation extends ReservationRequest {
   expiresAt: number;
@@ -118,6 +128,36 @@ export class UsageStore {
         return this.revokeShare(url.searchParams.get("id") || "");
       case "/shares/consume":
         return this.consumeShare(await readShareConsumeInput(request));
+      case "/inboxes/create":
+        return this.createInbox(await readFeatureBody<InboxRecord>(request, "record"));
+      case "/inboxes/list":
+        return this.listInboxes();
+      case "/inboxes/get":
+        return this.getInbox(url.searchParams.get("id") || "");
+      case "/inboxes/lookup":
+        return this.lookupInbox(url.searchParams.get("id") || "");
+      case "/inboxes/reserve":
+        return this.reserveInboxUpload(await readFeatureBody<{ id: string; now: number }>(request));
+      case "/inboxes/cancel-upload":
+        return this.cancelInboxUpload(await readFeatureBody<{ id: string }>(request));
+      case "/inboxes/finish-upload":
+        return this.finishInboxUpload(await readFeatureBody<InboxItemRecord>(request, "item"));
+      case "/inboxes/items":
+        return this.listInboxItems(url.searchParams.get("linkId") || "");
+      case "/inboxes/item":
+        return this.getInboxItem(url.searchParams.get("id") || "");
+      case "/inboxes/resolve":
+        return this.resolveInboxItem(await readFeatureBody<{ id: string }>(request));
+      case "/inboxes/revoke":
+        return this.revokeInbox(url.searchParams.get("id") || "");
+      case "/galleries/create":
+        return this.createGallery(await readFeatureBody<GalleryRecord>(request, "record"));
+      case "/galleries/list":
+        return this.listGalleries();
+      case "/galleries/get":
+        return this.getGallery(url.searchParams.get("id") || "");
+      case "/galleries/revoke":
+        return this.revokeGallery(url.searchParams.get("id") || "");
       case "/reset":
         return this.reset();
       default:
@@ -443,6 +483,175 @@ export class UsageStore {
     });
   }
 
+  private async createInbox(record: InboxRecord): Promise<Response> {
+    if (!isFeatureId(record?.id) || typeof record.folder !== "string" || !Number.isSafeInteger(record.expiresAt)) {
+      return Response.json({ ok: false, reason: "Invalid inbox record." }, { status: 400 });
+    }
+    return this.withStateLock(async () => {
+      const ids = await this.state.storage.get<string[]>(INBOX_INDEX_KEY) || [];
+      if (ids.length >= MAX_INBOX_LINKS) return Response.json({ ok: false, reason: "Inbox link limit reached." }, { status: 429 });
+      if (await this.state.storage.get<InboxRecord>(INBOX_RECORD_PREFIX + record.id)) {
+        return Response.json({ ok: false, reason: "Inbox link already exists." }, { status: 409 });
+      }
+      const saved: InboxRecord = { ...record, revoked: false, uploadCount: 0 };
+      ids.push(saved.id);
+      await this.state.storage.put({
+        [INBOX_INDEX_KEY]: ids,
+        [INBOX_RECORD_PREFIX + saved.id]: saved,
+        [INBOX_ITEMS_PREFIX + saved.id]: [],
+      });
+      return Response.json({ ok: true, inbox: saved });
+    });
+  }
+
+  private async listInboxes(): Promise<Response> {
+    const ids = await this.state.storage.get<string[]>(INBOX_INDEX_KEY) || [];
+    const inboxes = await Promise.all(ids.map((id) => this.state.storage.get<InboxRecord>(INBOX_RECORD_PREFIX + id)));
+    return Response.json({ ok: true, inboxes: inboxes.filter((item): item is InboxRecord => Boolean(item)) });
+  }
+
+  private async getInbox(id: string): Promise<Response> {
+    const inbox = isFeatureId(id) ? await this.state.storage.get<InboxRecord>(INBOX_RECORD_PREFIX + id) : undefined;
+    return Response.json({ ok: true, inbox: inbox || null });
+  }
+
+  private async lookupInbox(id: string): Promise<Response> {
+    const inbox = isFeatureId(id) ? await this.state.storage.get<InboxRecord>(INBOX_RECORD_PREFIX + id) : undefined;
+    return Response.json({ ok: true, inbox: inbox || null });
+  }
+
+  private async reserveInboxUpload(input: { id: string; now: number }): Promise<Response> {
+    return this.withStateLock(async () => {
+      if (!isFeatureId(input.id)) return Response.json({ ok: false, reason: "missing" });
+      const key = INBOX_RECORD_PREFIX + input.id;
+      const inbox = await this.state.storage.get<InboxRecord>(key);
+      if (!inbox) return Response.json({ ok: false, reason: "missing" });
+      if (inbox.revoked) return Response.json({ ok: false, reason: "revoked" });
+      if (Math.floor(input.now / 1000) > inbox.expiresAt) return Response.json({ ok: false, reason: "expired" });
+      if (inbox.uploadCount >= MAX_INBOX_UPLOADS) return Response.json({ ok: false, reason: "limit" });
+      inbox.uploadCount += 1;
+      await this.state.storage.put(key, inbox);
+      return Response.json({ ok: true, inbox });
+    });
+  }
+
+  private async cancelInboxUpload(input: { id: string }): Promise<Response> {
+    return this.withStateLock(async () => {
+      if (!isFeatureId(input.id)) return Response.json({ ok: true });
+      const key = INBOX_RECORD_PREFIX + input.id;
+      const inbox = await this.state.storage.get<InboxRecord>(key);
+      if (inbox) {
+        inbox.uploadCount = Math.max(0, inbox.uploadCount - 1);
+        await this.state.storage.put(key, inbox);
+      }
+      return Response.json({ ok: true });
+    });
+  }
+
+  private async finishInboxUpload(item: InboxItemRecord): Promise<Response> {
+    if (!isFeatureId(item?.id) || !isFeatureId(item.linkId) ||
+      item.objectKey !== `${RESERVED_ROOT}/inbox/${item.linkId}/${item.id}` ||
+      typeof item.name !== "string" || !item.name || !Number.isSafeInteger(item.size) || item.size < 0) {
+      return Response.json({ ok: false, reason: "Invalid inbox item." }, { status: 400 });
+    }
+    return this.withStateLock(async () => {
+      const linkKey = INBOX_RECORD_PREFIX + item.linkId;
+      const inbox = await this.state.storage.get<InboxRecord>(linkKey);
+      if (!inbox) return Response.json({ ok: false, reason: "Inbox link not found." }, { status: 404 });
+      const itemsKey = INBOX_ITEMS_PREFIX + item.linkId;
+      const ids = await this.state.storage.get<string[]>(itemsKey) || [];
+      if (ids.length >= MAX_INBOX_UPLOADS) return Response.json({ ok: false, reason: "Inbox is full." }, { status: 429 });
+      if (ids.includes(item.id)) return Response.json({ ok: false, reason: "Inbox item already exists." }, { status: 409 });
+      ids.push(item.id);
+      await this.state.storage.put({ [itemsKey]: ids, [INBOX_RECORD_PREFIX + "item:" + item.id]: item });
+      return Response.json({ ok: true, item });
+    });
+  }
+
+  private async listInboxItems(linkId: string): Promise<Response> {
+    const inboxes = linkId
+      ? [linkId]
+      : await this.state.storage.get<string[]>(INBOX_INDEX_KEY) || [];
+    const items = (await Promise.all(inboxes.map(async (id) => {
+      const ids = await this.state.storage.get<string[]>(INBOX_ITEMS_PREFIX + id) || [];
+      return Promise.all(ids.map((itemId) => this.state.storage.get<InboxItemRecord>(INBOX_RECORD_PREFIX + "item:" + itemId)));
+    }))).flat().filter((item): item is InboxItemRecord => Boolean(item));
+    return Response.json({ ok: true, items });
+  }
+
+  private async getInboxItem(id: string): Promise<Response> {
+    const item = isFeatureId(id) ? await this.state.storage.get<InboxItemRecord>(INBOX_RECORD_PREFIX + "item:" + id) : undefined;
+    return Response.json({ ok: true, item: item || null });
+  }
+
+  private async resolveInboxItem(input: { id: string }): Promise<Response> {
+    return this.withStateLock(async () => {
+      if (!isFeatureId(input.id)) return Response.json({ ok: true, item: null });
+      const itemKey = INBOX_RECORD_PREFIX + "item:" + input.id;
+      const item = await this.state.storage.get<InboxItemRecord>(itemKey);
+      if (!item) return Response.json({ ok: true, item: null });
+      const itemsKey = INBOX_ITEMS_PREFIX + item.linkId;
+      const ids = await this.state.storage.get<string[]>(itemsKey) || [];
+      await this.state.storage.put(itemsKey, ids.filter((id) => id !== item.id));
+      await this.state.storage.delete(itemKey);
+      return Response.json({ ok: true, item });
+    });
+  }
+
+  private async revokeInbox(id: string): Promise<Response> {
+    return this.withStateLock(async () => {
+      if (!isFeatureId(id)) return Response.json({ ok: true, revoked: false });
+      const key = INBOX_RECORD_PREFIX + id;
+      const inbox = await this.state.storage.get<InboxRecord>(key);
+      if (!inbox) return Response.json({ ok: true, revoked: false });
+      inbox.revoked = true;
+      await this.state.storage.put(key, inbox);
+      return Response.json({ ok: true, revoked: true });
+    });
+  }
+
+  private async createGallery(record: GalleryRecord): Promise<Response> {
+    if (!isFeatureId(record?.id) || typeof record.folder !== "string" ||
+      (record.mode !== "photos" && record.mode !== "files") || typeof record.title !== "string" ||
+      record.title.length > 120 || !Array.isArray(record.files) || record.files.length > 300) {
+      return Response.json({ ok: false, reason: "Invalid gallery record." }, { status: 400 });
+    }
+    return this.withStateLock(async () => {
+      const ids = await this.state.storage.get<string[]>(GALLERY_INDEX_KEY) || [];
+      if (ids.length >= MAX_GALLERIES) return Response.json({ ok: false, reason: "Public page limit reached." }, { status: 429 });
+      const key = GALLERY_RECORD_PREFIX + record.id;
+      if (await this.state.storage.get<GalleryRecord>(key)) return Response.json({ ok: false, reason: "Public page already exists." }, { status: 409 });
+      const saved: GalleryRecord = { ...record, revoked: false };
+      ids.push(saved.id);
+      await this.state.storage.put({ [GALLERY_INDEX_KEY]: ids, [key]: saved });
+      return Response.json({ ok: true, gallery: saved });
+    });
+  }
+
+  private async listGalleries(): Promise<Response> {
+    const ids = await this.state.storage.get<string[]>(GALLERY_INDEX_KEY) || [];
+    const records = await Promise.all(ids.map((id) => this.state.storage.get<GalleryRecord>(GALLERY_RECORD_PREFIX + id)));
+    const galleries = records.filter((item): item is GalleryRecord => Boolean(item)).map(({ files, ...item }) => ({ ...item, fileCount: files.length }));
+    return Response.json({ ok: true, galleries });
+  }
+
+  private async getGallery(id: string): Promise<Response> {
+    const gallery = isFeatureId(id) ? await this.state.storage.get<GalleryRecord>(GALLERY_RECORD_PREFIX + id) : undefined;
+    return Response.json({ ok: true, gallery: gallery || null });
+  }
+
+  private async revokeGallery(id: string): Promise<Response> {
+    return this.withStateLock(async () => {
+      if (!isFeatureId(id)) return Response.json({ ok: true, revoked: false });
+      const key = GALLERY_RECORD_PREFIX + id;
+      const gallery = await this.state.storage.get<GalleryRecord>(key);
+      if (!gallery) return Response.json({ ok: true, revoked: false });
+      gallery.revoked = true;
+      await this.state.storage.put(key, gallery);
+      return Response.json({ ok: true, revoked: true });
+    });
+  }
+
   private pruneShares(): void {
     const cutoff = Math.floor(Date.now() / 1000) - 90 * 86_400;
     this.state.storage.sql.exec(`DELETE FROM managed_shares WHERE expires_at < ?`, cutoff);
@@ -539,6 +748,19 @@ function mapShareRow(row: ShareSqlRow): {
 
 function isShareId(id: string): boolean {
   return /^[0-9a-f-]{36}$/i.test(id);
+}
+
+function isFeatureId(id: unknown): id is string {
+  return typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id);
+}
+
+async function readFeatureBody<T>(request: Request, property?: string): Promise<T> {
+  try {
+    const body = await request.json() as Record<string, unknown>;
+    return (property ? body[property] : body) as T;
+  } catch {
+    return {} as T;
+  }
 }
 
 async function readShareInput(request: Request): Promise<ShareCreateInput> {

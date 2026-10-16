@@ -1,6 +1,7 @@
 import type { UsageClient } from "./limited-r2.js";
 import { QuotaExceededError, type UsageState, type UsageSummary } from "./quota.js";
 import type { ManagedShareRecord, ShareCreateInput, ShareStoreClient } from "../share/record.js";
+import type { GalleryRecord, InboxItemRecord, InboxRecord } from "../features/records.js";
 
 export interface UsageTrendDay {
   day: string;
@@ -97,6 +98,79 @@ export class DOUsageClient implements UsageClient, ShareStoreClient {
     return { ok: Boolean(result.ok), reason: result.reason as "missing" | "revoked" | "expired" | "limit" | undefined };
   }
 
+  async createInbox(record: InboxRecord): Promise<void> {
+    await this.featureJson("/inboxes/create", "POST", { record });
+  }
+
+  async listInboxes(): Promise<InboxRecord[]> {
+    const result = await this.featureJson("/inboxes/list", "GET");
+    return result.inboxes as InboxRecord[];
+  }
+
+  async getInbox(id: string): Promise<InboxRecord | null> {
+    const result = await this.featureJson("/inboxes/get?id=" + encodeURIComponent(id), "GET");
+    return (result.inbox as InboxRecord | null) || null;
+  }
+
+  async lookupInbox(id: string): Promise<InboxRecord | null> {
+    const result = await this.featureJson("/inboxes/lookup?id=" + encodeURIComponent(id), "GET");
+    return (result.inbox as InboxRecord | null) || null;
+  }
+
+  async reserveInboxUpload(id: string, now = Date.now()): Promise<{ ok: boolean; reason?: string; inbox?: InboxRecord }> {
+    return await this.featureJson("/inboxes/reserve", "POST", { id, now }) as {
+      ok: boolean; reason?: string; inbox?: InboxRecord;
+    };
+  }
+
+  async cancelInboxUpload(id: string): Promise<void> {
+    await this.featureJson("/inboxes/cancel-upload", "POST", { id });
+  }
+
+  async finishInboxUpload(item: InboxItemRecord): Promise<void> {
+    await this.featureJson("/inboxes/finish-upload", "POST", { item });
+  }
+
+  async listInboxItems(linkId = ""): Promise<InboxItemRecord[]> {
+    const query = linkId ? "?linkId=" + encodeURIComponent(linkId) : "";
+    const result = await this.featureJson("/inboxes/items" + query, "GET");
+    return result.items as InboxItemRecord[];
+  }
+
+  async getInboxItem(id: string): Promise<InboxItemRecord | null> {
+    const result = await this.featureJson("/inboxes/item?id=" + encodeURIComponent(id), "GET");
+    return (result.item as InboxItemRecord | null) || null;
+  }
+
+  async resolveInboxItem(id: string): Promise<InboxItemRecord | null> {
+    const result = await this.featureJson("/inboxes/resolve", "POST", { id });
+    return (result.item as InboxItemRecord | null) || null;
+  }
+
+  async revokeInbox(id: string): Promise<boolean> {
+    const result = await this.featureJson("/inboxes/revoke?id=" + encodeURIComponent(id), "POST");
+    return Boolean(result.revoked);
+  }
+
+  async createGallery(record: GalleryRecord): Promise<void> {
+    await this.featureJson("/galleries/create", "POST", { record });
+  }
+
+  async listGalleries(): Promise<Array<Omit<GalleryRecord, "files"> & { fileCount: number }>> {
+    const result = await this.featureJson("/galleries/list", "GET");
+    return result.galleries as Array<Omit<GalleryRecord, "files"> & { fileCount: number }>;
+  }
+
+  async getGallery(id: string): Promise<GalleryRecord | null> {
+    const result = await this.featureJson("/galleries/get?id=" + encodeURIComponent(id), "GET");
+    return (result.gallery as GalleryRecord | null) || null;
+  }
+
+  async revokeGallery(id: string): Promise<boolean> {
+    const result = await this.featureJson("/galleries/revoke?id=" + encodeURIComponent(id), "POST");
+    return Boolean(result.revoked);
+  }
+
   private async post(
     path: string,
     storageBytes: number,
@@ -131,6 +205,19 @@ export class DOUsageClient implements UsageClient, ShareStoreClient {
     if (!response.ok || result.ok === false) {
       throw new QuotaExceededError(typeof result.reason === "string" ? result.reason : "Usage store request failed.");
     }
+    return result;
+  }
+
+  private async featureJson(path: string, method: "GET" | "POST", body?: unknown): Promise<Record<string, unknown>> {
+    const response = await this.stub.fetch("https://usage" + path, {
+      method,
+      ...(body === undefined ? {} : {
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    });
+    const result = await response.json().catch(() => ({})) as Record<string, unknown>;
+    if (!response.ok) throw new QuotaExceededError(typeof result.reason === "string" ? result.reason : "Feature store request failed.");
     return result;
   }
 }

@@ -125,6 +125,15 @@ npx wrangler secret put FEISHU_WEBHOOK_SECRET  # 可选；仅当机器人开启�
 npx wrangler secret put SHARE_SECRET
 ```
 
+## 外链收件箱、文件星图与目录主页
+
+- **外链收件箱**：在文件页为当前目录生成 1 天、7 天或 30 天有效的上传链接。访客只能上传，不能浏览或下载；单个文件最大 100 MB，每条链接最多接收 100 个文件。文件先保存在隐藏暂存区，在管理页“收件箱”视图中逐个保留或删除。保留时若目标文件名已存在，会自动添加序号，不会覆盖原文件。
+- 收件链接使用 `SHARE_SECRET` 签名，未配置时回退到 `WEBDAV_PASSWORD`；变更签名密钥会使已有收件链接失效。管理页可重新复制仍有效的链接。
+- **文件星图**：文件页的“文件星图”会递归扫描当前目录，以分页方式载入最多 10,000 个文件。面积可按文件大小、文件数或近期修改活跃度显示，颜色可切换为大小、类型或修改时间；点击目录可继续下钻，点击文件可打开。超过 10,000 个文件时显示已扫描部分，可进入子目录查看。
+- **目录主页**：在文件页发布当前目录的照片墙或文件展示页。发布时冻结文件清单，最多包含 300 个受支持文件；照片墙只内嵌 JPEG、PNG、GIF、WebP 和 AVIF，文件展示额外支持 PDF、TXT 和 MD 下载。HTML、脚本、SVG 等类型不会公开。主页可在“公开主页”视图中撤销。
+
+收件链接和目录主页都不需要新增 Cloudflare binding；链接状态、待确认项和发布快照保存在现有 `USAGE_STORE` Durable Object 中。
+
 ## 官方用量校准
 
 为提高精度，可创建一个具有 **Account → Account Analytics → Read** 权限的 Cloudflare API Token，将 `CF_ACCOUNT_ID` 设为 Worker 普通变量，并将 Token 设为 Secret：
@@ -198,7 +207,8 @@ npm run dev
 src/
   auth/       Basic Auth 验证
   http/       WebDAV 路径解析与 HTTP/XML 响应
-  web/        Web 管理页面与文件/用量/分享 JSON 接口
+  web/        Web 管理页面与文件/用量/分享/收件/主页 JSON 接口
+  features/   收件箱和目录主页的持久化记录类型
   share/      分享链接的签名与验证
   monitor/    配额统计、Durable Object 用量存储与官方校准
   notify/     飞书阈值预警通知

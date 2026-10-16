@@ -13,6 +13,9 @@ import { apiTrash } from "./web/trash-api.js";
 import { purgeExpiredTrash } from "./storage/trash.js";
 import { apiSearch } from "./web/search-api.js";
 import { apiPreview } from "./web/preview-api.js";
+import { apiInboxItem, apiInboxes, apiRevokeInbox, handleInboxPublic } from "./web/inbox-api.js";
+import { apiGalleries, apiRevokeGallery, handleGalleryPublic } from "./web/gallery-api.js";
+import { apiMap } from "./web/map-api.js";
 
 export { UsageStore };
 
@@ -136,6 +139,12 @@ export default {
       const usage = new DOUsageClient(env.USAGE_STORE);
       return apiFiles(request, trackedEnv(env, usage), usage);
     }
+    if (url.pathname === "/api/map" && request.method === "GET") {
+      const denied = await requireAuthorization(request, env);
+      if (denied) return denied;
+      if (!env.USAGE_STORE) return new Response("Durable Object binding is not configured.", { status: 503 });
+      return apiMap(request, trackedEnv(env, new DOUsageClient(env.USAGE_STORE)));
+    }
     if (url.pathname === "/api/search" && request.method === "GET") {
       const denied = await requireAuthorization(request, env);
       if (denied) return denied;
@@ -156,6 +165,42 @@ export default {
       if (!env.USAGE_STORE) return new Response("Durable Object binding is not configured.", { status: 503 });
       const usage = new DOUsageClient(env.USAGE_STORE);
       return apiShare(request, trackedEnv(env, usage), usage);
+    }
+    if (url.pathname === "/api/inboxes" && ["GET", "POST"].includes(request.method)) {
+      const denied = await requireAuthorization(request, env);
+      if (denied) return denied;
+      if (!env.USAGE_STORE) return new Response("Durable Object binding is not configured.", { status: 503 });
+      const usage = new DOUsageClient(env.USAGE_STORE);
+      return apiInboxes(request, trackedEnv(env, usage), usage);
+    }
+    const inboxRevokeMatch = url.pathname.match(/^\/api\/inboxes\/([0-9a-f-]{36})$/i);
+    if (inboxRevokeMatch && request.method === "DELETE") {
+      const denied = await requireAuthorization(request, env);
+      if (denied) return denied;
+      if (!env.USAGE_STORE) return new Response("Durable Object binding is not configured.", { status: 503 });
+      return apiRevokeInbox(inboxRevokeMatch[1], new DOUsageClient(env.USAGE_STORE));
+    }
+    const inboxItemMatch = url.pathname.match(/^\/api\/inboxes\/([0-9a-f-]{36})\/items\/([0-9a-f-]{36})\/(keep|delete)$/i);
+    if (inboxItemMatch) {
+      const denied = await requireAuthorization(request, env);
+      if (denied) return denied;
+      if (!env.FILES || !env.USAGE_STORE) return new Response("R2 bucket or Durable Object binding is not configured.", { status: 503 });
+      const usage = new DOUsageClient(env.USAGE_STORE);
+      return apiInboxItem(request, inboxItemMatch[1], inboxItemMatch[2], inboxItemMatch[3] as "keep" | "delete", trackedEnv(env, usage), usage, usage);
+    }
+    if (url.pathname === "/api/galleries" && ["GET", "POST"].includes(request.method)) {
+      const denied = await requireAuthorization(request, env);
+      if (denied) return denied;
+      if (!env.USAGE_STORE) return new Response("Durable Object binding is not configured.", { status: 503 });
+      const usage = new DOUsageClient(env.USAGE_STORE);
+      return apiGalleries(request, trackedEnv(env, usage), usage);
+    }
+    const galleryRevokeMatch = url.pathname.match(/^\/api\/galleries\/([0-9a-f-]{36})$/i);
+    if (galleryRevokeMatch && request.method === "DELETE") {
+      const denied = await requireAuthorization(request, env);
+      if (denied) return denied;
+      if (!env.USAGE_STORE) return new Response("Durable Object binding is not configured.", { status: 503 });
+      return apiRevokeGallery(galleryRevokeMatch[1], new DOUsageClient(env.USAGE_STORE));
     }
     if (url.pathname === "/api/shares" && request.method === "GET") {
       const denied = await requireAuthorization(request, env);
@@ -182,6 +227,20 @@ export default {
       if (!env.FILES) return credentialError("R2 bucket is not configured.");
       if (!env.USAGE_STORE) return credentialError("Durable Object binding is not configured.");
       return handleShareDownload(request, env, new DOUsageClient(env.USAGE_STORE));
+    }
+    if (url.pathname.startsWith("/inbox/")) {
+      if (!hasCredentials(env)) return credentialError("Set the WEBDAV_PASSWORD secret before using WebDAV.");
+      if (!env.FILES) return credentialError("R2 bucket is not configured.");
+      if (!env.USAGE_STORE) return credentialError("Durable Object binding is not configured.");
+      const usage = new DOUsageClient(env.USAGE_STORE);
+      return handleInboxPublic(request, env, usage, usage);
+    }
+    if (url.pathname.startsWith("/gallery/")) {
+      if (!hasCredentials(env)) return credentialError("Set the WEBDAV_PASSWORD secret before using WebDAV.");
+      if (!env.FILES) return credentialError("R2 bucket is not configured.");
+      if (!env.USAGE_STORE) return credentialError("Durable Object binding is not configured.");
+      const usage = new DOUsageClient(env.USAGE_STORE);
+      return handleGalleryPublic(request, trackedEnv(env, usage), usage);
     }
     if (url.pathname === "/api/trend" && request.method === "GET") {
       const denied = await requireAuthorization(request, env);

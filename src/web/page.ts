@@ -1,3 +1,4 @@
+import { fileMapStyle, fileMapMarkup, fileMapScript } from "./file-map.js";
 const style = `
   :root { color-scheme: light; --canvas: #f3f6fb; --surface: #fff; --line: #e5eaf2; --muted: #64748b; --text: #17243a; --blue: #2563eb; --blue-dark: #1d4ed8; --red: #dc4545; --green: #16865b; --amber: #d58a16; }
   * { box-sizing: border-box; }
@@ -131,12 +132,26 @@ const style = `
   .share-result { display: none; margin-bottom: 16px; }
   .share-result.show { display: block; }
   .share-result textarea { width: 100%; min-height: 74px; padding: 10px 12px; border: 1px solid #dfe6ef; border-radius: 10px; background: #f8fafd; color: var(--text); font: 500 11px ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; }
+  ${fileMapStyle}
+  .inbox-links { padding: 18px 22px; border-top: 1px solid #edf0f5; }
+  .inbox-links h3 { margin: 0 0 10px; font-size: 13px; }
+  .inbox-link-row { display: grid; grid-template-columns: minmax(0,1fr) auto auto; align-items: center; gap: 12px; min-height: 56px; padding: 8px 0; border-top: 1px solid #edf0f5; color: #53647d; font-size: 12px; }
+  .inbox-link-row strong { display: block; color: #263851; font-size: 12px; }
+  .inbox-link-row small { display: block; margin-top: 3px; color: #8794a6; font-size: 10px; }
+  .inbox-link-row button { min-height: 34px; }
+  .inbox-link-actions { display: flex; gap: 5px; }
+  .gallery-link { max-width: 280px; overflow-wrap: anywhere; color: #245ac0; font-size: 11px; }
+  .text-field { display: block; margin: 0 0 14px; color: #53647d; font-size: 12px; }
+  .text-field input { display: block; width: 100%; height: 40px; margin-top: 6px; padding: 0 10px; border: 1px solid #dfe6ef; border-radius: 8px; color: var(--text); }
+  .mode-options { display: flex; gap: 8px; margin: 0 0 16px; }
+  .mode-options label { display: flex; align-items: center; gap: 7px; min-height: 40px; padding: 0 12px; border: 1px solid #dfe6ef; border-radius: 8px; color: #53647d; font-size: 12px; }
+  .mode-options input { accent-color: var(--blue); }
   .upload-progress { display: none; align-items: center; gap: 10px; margin: 0 22px 12px; color: #53647d; font-size: 12px; }
   .upload-progress.show { display: flex; }
   .upload-progress .bar { flex: 1; height: 6px; margin: 0; }
   .tablewrap.dragover { outline: 2px dashed #8eaff4; outline-offset: -6px; background: #f4f8ff; }
   .footer-note { margin: 13px 4px 0; color: #8794a6; font-size: 11px; line-height: 1.6; }
-  @media (max-width: 900px) { .app { padding: 28px 22px 48px; } .quota { padding: 16px; } .quota-value { font-size: 22px; } .search input { width: 160px; } }
+  @media (max-width: 900px) { .app { padding: 28px 22px 48px; } .quota { padding: 16px; } .quota-value { font-size: 22px; } .search input { width: 160px; } .toolbar { flex-wrap: wrap; } #search-tools, #file-tools { flex: 1 1 100%; } #file-tools { flex-wrap: wrap; } }
   @media (max-width: 680px) {
     .app { padding: 22px 14px 36px; }
     .page-header { align-items: flex-start; flex-direction: column; gap: 16px; margin-bottom: 23px; }
@@ -180,6 +195,11 @@ const style = `
     .toolbar-tools { flex-wrap: wrap; }
     .toolbar select { flex: 0 0 100%; }
     .bulk-actions { padding-right: 13px; padding-left: 13px; }
+    .inbox-links { padding-right: 13px; padding-left: 13px; }
+    .inbox-link-row { grid-template-columns: minmax(0,1fr) auto; }
+    .inbox-link-row > span:nth-child(2) { grid-column: 1; }
+    .inbox-link-row button { grid-column: 2; grid-row: 1 / span 2; }
+    .inbox-link-row .inbox-link-actions { grid-column: 2; grid-row: 1 / span 2; flex-direction: column; }
     .row button { min-height: 34px; padding: 0 10px; }
     .empty-cell { display: block !important; padding: 48px 20px !important; border: 0 !important; }
     .footer-note { margin-top: 10px; }
@@ -194,6 +214,9 @@ const script = `
   let currentEntries = [];
   let currentTrash = [];
   let currentShares = [];
+  let currentInboxes = [];
+  let currentInboxItems = [];
+  let currentGalleries = [];
   let trendDays = [];
   let currentUsage = null;
   let currentView = 'files';
@@ -427,8 +450,46 @@ const script = `
     return data.url;
   }
 
+  function openInboxDialog() {
+    el('inbox-result').className = 'share-result';
+    el('inbox-url').value = '';
+    el('inbox-context').textContent = '目标目录：/' + currentPath.join('/') + '。上传内容需手动确认，已有文件不会被覆盖。';
+    el('inbox-backdrop').classList.add('show');
+  }
+
+  async function createInboxLink() {
+    const ttlHours = Number(el('inbox-ttl').value);
+    const data = await apiAction('/api/inboxes', 'POST', { folder: currentPath.join('/'), ttlHours });
+    el('inbox-url').value = data.url;
+    el('inbox-result').className = 'share-result show';
+    el('inbox-url').select();
+    document.execCommand('copy');
+    notify('收件链接已生成并复制');
+  }
+
+  function openGalleryDialog() {
+    el('gallery-result').className = 'share-result';
+    el('gallery-url').value = '';
+    el('gallery-title-input').value = currentPath[currentPath.length - 1] || '';
+    el('gallery-context').textContent = '发布目录：/' + currentPath.join('/') + '。HTML、脚本和 SVG 不会公开。';
+    el('gallery-backdrop').classList.add('show');
+  }
+
+  async function createGallery() {
+    const mode = el('gallery-mode').querySelector('input:checked').value;
+    const data = await apiAction('/api/galleries', 'POST', {
+      folder: currentPath.join('/'), mode, title: el('gallery-title-input').value.trim(),
+    });
+    el('gallery-url').value = data.url;
+    el('gallery-result').className = 'share-result show';
+    el('gallery-url').select();
+    document.execCommand('copy');
+    notify('公开主页已生成并复制');
+  }
+
   function renderBulkState() {
     const bar = el('bulk-actions');
+    if (!['files', 'trash', 'shares'].includes(currentView)) { bar.className = 'bulk-actions'; bar.innerHTML = ''; return; }
     if (!selected.size) { bar.className = 'bulk-actions'; bar.innerHTML = ''; return; }
     let actions = '';
     if (currentView === 'files') actions = '<button class="danger" data-bulk="trash">移至回收站</button>';
@@ -497,6 +558,53 @@ const script = `
     renderBulkState();
   }
 
+  function renderInboxes(data) {
+    currentInboxes = data.inboxes || [];
+    currentInboxItems = data.items || [];
+    selected.clear();
+    el('table').dataset.view = 'inbox';
+    el('entry-count').textContent = currentInboxItems.length + ' 个待确认文件';
+    el('table-head').innerHTML = '<tr><th>文件</th><th>收件目录</th><th>大小</th><th>上传时间</th><th>操作</th></tr>';
+    if (!currentInboxItems.length) {
+      el('rows').innerHTML = '<tr><td colspan="5" class="empty-cell">暂无待确认文件</td></tr>';
+    } else {
+      el('rows').innerHTML = currentInboxItems.map((item) => '<tr class="row"><td data-label="文件"><strong>' + esc(item.name) + '</strong></td>' +
+        '<td data-label="收件目录">' + (item.folder ? esc(item.folder) : '根目录') + '</td><td data-label="大小">' + fmtSize(item.size) + '</td>' +
+        '<td data-label="上传时间">' + fmtDate(item.uploadedAt) + '</td><td data-label="操作"><button data-inbox-keep="' + attr(item.id) + '" data-inbox-owner="' + attr(item.linkId) + '">保留</button>' +
+        '<button data-inbox-delete="' + attr(item.id) + '" data-inbox-owner="' + attr(item.linkId) + '" class="danger">删除</button></td></tr>').join('');
+    }
+    el('inbox-links-list').innerHTML = currentInboxes.length ? currentInboxes.map((item) => {
+      const expiresAt = typeof item.expiresAt === 'number' ? item.expiresAt * 1000 : Date.parse(item.expiresAt);
+      const status = item.revoked ? '已撤销' : expiresAt < Date.now() ? '已过期' : '有效';
+      const count = item.uploadCount + ' / 100 次上传 · ' + item.pendingCount + ' 个待确认';
+      const action = status === '有效' ? '<span class="inbox-link-actions"><button data-copy-inbox="' + attr(item.id) + '" data-inbox-url="' + attr(item.url) + '">复制</button><button data-revoke-inbox="' + attr(item.id) + '">撤销</button></span>' : '<button disabled>已结束</button>';
+      return '<div class="inbox-link-row"><span><strong>' + (item.folder ? esc(item.folder) : '根目录') + '</strong><small>' + esc(count) + ' · ' + status + '</small></span>' +
+        '<span>有效至 ' + fmtDate(new Date(expiresAt).toISOString()) + '</span>' + action + '</div>';
+    }).join('') : '<p class="subline">尚未生成收件链接</p>';
+    renderBulkState();
+  }
+
+  function renderGalleries(items) {
+    currentGalleries = items;
+    selected.clear();
+    el('table').dataset.view = 'galleries';
+    el('entry-count').textContent = items.length + ' 个公开主页';
+    el('table-head').innerHTML = '<tr><th>页面</th><th>目录</th><th>项目数</th><th>发布时间</th><th>状态</th><th>操作</th></tr>';
+    if (!items.length) {
+      el('rows').innerHTML = '<tr><td colspan="6" class="empty-cell">暂无公开主页</td></tr>';
+    } else {
+      el('rows').innerHTML = items.map((item) => {
+        const url = location.origin + '/gallery/' + item.id;
+        return '<tr class="row"><td data-label="页面"><strong>' + esc(item.title) + '</strong><small class="subline">' + (item.mode === 'photos' ? '照片墙' : '文件展示') + '</small></td>' +
+          '<td data-label="目录">' + (item.folder ? esc(item.folder) : '根目录') + '</td><td data-label="项目数">' + item.fileCount + '</td>' +
+          '<td data-label="发布时间">' + fmtDate(item.createdAt) + '</td><td data-label="状态">' + (item.revoked ? '已撤销' : '公开') + '</td>' +
+          '<td data-label="操作"><a class="gallery-link" href="' + attr(url) + '" target="_blank" rel="noopener">打开</a>' +
+          '<button data-copy-gallery="' + attr(item.id) + '">复制链接</button>' + (item.revoked ? '' : '<button data-revoke-gallery="' + attr(item.id) + '" class="danger">撤销</button>') + '</td></tr>';
+      }).join('');
+    }
+    renderBulkState();
+  }
+
   async function loadTrash() {
     const requestView = ++viewRequest;
     const response = await fetch('/api/trash', { cache: 'no-store' });
@@ -513,6 +621,24 @@ const script = `
     if (!response.ok) throw new Error(data.error || '分享链接加载失败');
     if (requestView !== viewRequest) return;
     renderShares(data.shares || []);
+  }
+
+  async function loadInboxes() {
+    const requestView = ++viewRequest;
+    const response = await fetch('/api/inboxes', { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '收件箱加载失败');
+    if (requestView !== viewRequest) return;
+    renderInboxes(data);
+  }
+
+  async function loadGalleries() {
+    const requestView = ++viewRequest;
+    const response = await fetch('/api/galleries', { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '公开主页加载失败');
+    if (requestView !== viewRequest) return;
+    renderGalleries(data.galleries || []);
   }
 
   async function loadRecursiveSearch(append = false) {
@@ -546,14 +672,17 @@ const script = `
     el('search-tools').hidden = view !== 'files';
     el('file-tools').hidden = view !== 'files';
     el('empty-trash').hidden = view !== 'trash';
+    el('inbox-links').hidden = view !== 'inbox';
     el('search').value = '';
     searchCursor = null;
     el('load-more').hidden = true;
-    showViewLoading(view === 'files' ? '正在加载文件列表…' : view === 'trash' ? '正在加载回收站…' : '正在加载分享链接…');
+    showViewLoading(view === 'files' ? '正在加载文件列表…' : view === 'trash' ? '正在加载回收站…' : view === 'shares' ? '正在加载分享链接…' : view === 'inbox' ? '正在加载待确认文件…' : '正在加载公开主页…');
     try {
       if (view === 'files') await loadFiles();
       if (view === 'trash') await loadTrash();
       if (view === 'shares') await loadShares();
+      if (view === 'inbox') await loadInboxes();
+      if (view === 'galleries') await loadGalleries();
     } catch (error) { notify(error.message || '加载失败', true); }
   }
 
@@ -661,9 +790,11 @@ const script = `
 
   el('refresh').addEventListener('click', async () => {
     try {
-      await loadFiles();
-      if (currentView === 'trash') await loadTrash();
-      if (currentView === 'shares') await loadShares();
+      if (currentView === 'files') await loadFiles();
+      else if (currentView === 'trash') await loadTrash();
+      else if (currentView === 'shares') await loadShares();
+      else if (currentView === 'inbox') await loadInboxes();
+      else if (currentView === 'galleries') await loadGalleries();
     } catch (error) { notify(error.message || '刷新失败', true); }
   });
   el('search').addEventListener('input', () => {
@@ -719,6 +850,12 @@ const script = `
     const purge = event.target.closest('[data-purge]');
     const revoke = event.target.closest('[data-revoke]');
     const copyShare = event.target.closest('[data-copy-share]');
+    const inboxKeep = event.target.closest('[data-inbox-keep]');
+    const inboxDelete = event.target.closest('[data-inbox-delete]');
+    const copyInbox = event.target.closest('[data-copy-inbox]');
+    const revokeInbox = event.target.closest('[data-revoke-inbox]');
+    const revokeGallery = event.target.closest('[data-revoke-gallery]');
+    const copyGallery = event.target.closest('[data-copy-gallery]');
     if (dir) { event.preventDefault(); location.hash = encodeURIComponent(dir.dataset.dir || ''); }
     else if (del) { event.preventDefault(); try { if (await remove(del.dataset.delete)) loadFiles(); } catch (error) { notify(error.message || '删除失败', true); } }
     else if (ren) { event.preventDefault(); try { await rename(ren.dataset.rename); loadFiles(); } catch (error) { notify(error.message || '重命名失败', true); } }
@@ -728,6 +865,12 @@ const script = `
     else if (purge) { if (confirm('永久删除此项目？此操作无法恢复。')) try { await apiAction('/api/trash/' + encodeURIComponent(purge.dataset.purge), 'DELETE'); await loadTrash(); const response = await fetch(apiPath(currentPath), { cache: 'no-store' }); if (response.ok) renderQuota((await response.json()).usage); notify('已永久删除'); } catch (error) { notify(error.message || '删除失败', true); } }
     else if (revoke) { if (confirm('撤销此分享链接？')) try { await apiAction('/api/shares/' + encodeURIComponent(revoke.dataset.revoke), 'DELETE'); await loadShares(); notify('分享链接已撤销'); } catch (error) { notify(error.message || '撤销失败', true); } }
     else if (copyShare) { const item = currentShares.find((shareItem) => shareItem.id === copyShare.dataset.copyShare); if (item) { await navigator.clipboard.writeText(item.url); notify('链接已复制'); } }
+    else if (inboxKeep) { try { const result = await apiAction('/api/inboxes/' + encodeURIComponent(inboxKeep.dataset.inboxOwner) + '/items/' + encodeURIComponent(inboxKeep.dataset.inboxKeep) + '/keep', 'POST'); await loadInboxes(); notify('已保留到云盘：' + result.name); } catch (error) { notify(error.message || '保留失败', true); } }
+    else if (inboxDelete) { if (confirm('永久删除此待确认文件？')) try { await apiAction('/api/inboxes/' + encodeURIComponent(inboxDelete.dataset.inboxOwner) + '/items/' + encodeURIComponent(inboxDelete.dataset.inboxDelete) + '/delete', 'DELETE'); await loadInboxes(); notify('待确认文件已删除'); } catch (error) { notify(error.message || '删除失败', true); } }
+    else if (copyInbox) { await navigator.clipboard.writeText(copyInbox.dataset.inboxUrl); notify('收件链接已复制'); }
+    else if (revokeInbox) { if (confirm('撤销此收件链接？待确认文件仍会保留。')) try { await apiAction('/api/inboxes/' + encodeURIComponent(revokeInbox.dataset.revokeInbox), 'DELETE'); await loadInboxes(); notify('收件链接已撤销'); } catch (error) { notify(error.message || '撤销失败', true); } }
+    else if (revokeGallery) { if (confirm('撤销此公开主页？')) try { await apiAction('/api/galleries/' + encodeURIComponent(revokeGallery.dataset.revokeGallery), 'DELETE'); await loadGalleries(); notify('公开主页已撤销'); } catch (error) { notify(error.message || '撤销失败', true); } }
+    else if (copyGallery) { await navigator.clipboard.writeText(location.origin + '/gallery/' + copyGallery.dataset.copyGallery); notify('公开主页链接已复制'); }
   });
   el('table').addEventListener('change', (event) => {
     const checkbox = event.target.closest('[data-select]');
@@ -791,11 +934,31 @@ const script = `
   el('preview-backdrop').addEventListener('click', (event) => {
     if (event.target === el('preview-backdrop')) { el('preview-backdrop').classList.remove('show'); el('preview-content').replaceChildren(); }
   });
+  el('inbox-create-open').addEventListener('click', openInboxDialog);
+  el('inbox-create').addEventListener('click', async () => {
+    el('inbox-create').disabled = true;
+    try { await createInboxLink(); } catch (error) { notify(error.message || '收件链接生成失败', true); }
+    finally { el('inbox-create').disabled = false; }
+  });
+  el('inbox-copy').addEventListener('click', async () => { await navigator.clipboard.writeText(el('inbox-url').value); notify('收件链接已复制'); });
+  el('inbox-close').addEventListener('click', () => el('inbox-backdrop').classList.remove('show'));
+  el('inbox-backdrop').addEventListener('click', (event) => { if (event.target === el('inbox-backdrop')) el('inbox-backdrop').classList.remove('show'); });
+  el('gallery-create-open').addEventListener('click', openGalleryDialog);
+  el('gallery-create').addEventListener('click', async () => {
+    el('gallery-create').disabled = true;
+    try { await createGallery(); } catch (error) { notify(error.message || '公开主页生成失败', true); }
+    finally { el('gallery-create').disabled = false; }
+  });
+  el('gallery-copy').addEventListener('click', async () => { await navigator.clipboard.writeText(el('gallery-url').value); notify('公开主页链接已复制'); });
+  el('gallery-close').addEventListener('click', () => el('gallery-backdrop').classList.remove('show'));
+  el('gallery-backdrop').addEventListener('click', (event) => { if (event.target === el('gallery-backdrop')) el('gallery-backdrop').classList.remove('show'); });
   window.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       el('share-backdrop').classList.remove('show');
       el('preview-backdrop').classList.remove('show');
       el('preview-content').replaceChildren();
+      el('inbox-backdrop').classList.remove('show');
+      el('gallery-backdrop').classList.remove('show');
     }
   });
   const tablewrap = document.querySelector('.tablewrap');
@@ -818,6 +981,7 @@ const script = `
     catch (error) { notify(error.message || '上传失败', true); }
     finally { el('file').disabled = false; setUploadProgress(false); }
   });
+  ${fileMapScript}
   window.addEventListener('hashchange', initialize);
   initialize();
 `;
@@ -845,14 +1009,16 @@ export function webPage(nonce: string): string {
     <div class="panel-heading"><div class="panel-title"><h2 id="files-title">文件管理</h2><span id="entry-count">正在加载</span></div><div id="status" class="status loading" role="status" aria-live="polite"><span class="status-dot"></span><span>正在连接</span></div></div>
     <nav class="view-tabs" aria-label="文件视图">
       <button class="active" data-view="files">文件</button>
+      <button data-view="inbox">收件箱</button>
       <button data-view="trash">回收站</button>
       <button data-view="shares">分享链接</button>
+      <button data-view="galleries">公开主页</button>
     </nav>
     <div class="toolbar">
       <nav id="breadcrumbs" class="breadcrumbs" aria-label="目录路径"></nav>
       <div class="toolbar-tools" id="search-tools"><label class="search"><svg viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m16 16 4.5 4.5"/></svg><input id="search" type="search" placeholder="递归搜索当前目录" aria-label="递归搜索当前目录"></label>
         <select id="sort" aria-label="排序"><option value="name">按名称</option><option value="updated">最近修改</option><option value="created">最近创建</option><option value="size">文件大小</option><option value="type">文件类型</option></select></div>
-      <div class="toolbar-tools" id="file-tools"><button id="mkdir" aria-label="新建文件夹"><svg viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M12 10.5v6M9 13.5h6"/></svg>新建文件夹</button><div class="upload"><input id="file" type="file" multiple><label class="upload-label" for="file"><svg viewBox="0 0 24 24"><path d="M12 16V4M7.5 8.5 12 4.5"/><path d="M5 14v5h14v-5"/></svg><span id="upload-label-text">上传文件</span></label></div></div>
+      <div class="toolbar-tools" id="file-tools"><button id="mkdir" aria-label="新建文件夹"><svg viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M12 10.5v6M9 13.5h6"/></svg>新建文件夹</button><div class="upload"><input id="file" type="file" multiple><label class="upload-label" for="file"><svg viewBox="0 0 24 24"><path d="M12 16V4M7.5 8.5 12 4.5"/><path d="M5 14v5h14v-5"/></svg><span id="upload-label-text">上传文件</span></label></div><button id="star-map-open" aria-label="打开文件星图">文件星图</button><button id="inbox-create-open">生成收件链接</button><button id="gallery-create-open">发布目录主页</button></div>
       <button id="empty-trash" class="danger" hidden>清空回收站</button>
     </div>
     <div id="bulk-actions" class="bulk-actions"></div>
@@ -861,6 +1027,7 @@ export function webPage(nonce: string): string {
       <table id="table" class="table"><thead id="table-head"><tr><th></th><th>名称</th><th>大小</th><th>创建时间</th><th>修改时间</th><th>操作</th></tr></thead><tbody id="rows"><tr><td colspan="6" class="empty-cell">正在加载文件列表…</td></tr></tbody></table>
     </div>
     <button id="load-more" class="load-more" hidden>加载更多搜索结果</button>
+    <section id="inbox-links" class="inbox-links" hidden><h3>收件链接</h3><div id="inbox-links-list"></div></section>
   </section>
   <p class="footer-note">用量数据为 Worker 侧统计估算；点击“同步官方用量”可与 Cloudflare 官方数据校准。</p>
 </main>
@@ -891,6 +1058,24 @@ export function webPage(nonce: string): string {
   <div class="dialog preview-dialog" role="dialog" aria-modal="true" aria-labelledby="preview-title">
     <div class="preview-heading"><h3 id="preview-title">文件预览</h3><button id="preview-close" aria-label="关闭预览">关闭</button></div>
     <div id="preview-content"></div>
+  </div>
+</div>
+${fileMapMarkup}
+<div id="inbox-backdrop" class="dialog-backdrop">
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="inbox-title">
+    <h3 id="inbox-title">生成收件链接</h3><p id="inbox-context" class="dialog-sub">文件将进入待确认区，不会覆盖已有文件。</p>
+    <label class="limit-field">有效期<select id="inbox-ttl"><option value="24">1 天</option><option value="168" selected>7 天</option><option value="720">30 天</option></select></label>
+    <div id="inbox-result" class="share-result"><textarea id="inbox-url" readonly aria-label="收件链接"></textarea></div>
+    <div class="dialog-actions"><button id="inbox-copy">复制</button><button id="inbox-close">关闭</button><button id="inbox-create" class="primary">生成链接</button></div>
+  </div>
+</div>
+<div id="gallery-backdrop" class="dialog-backdrop">
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="gallery-title">
+    <h3 id="gallery-title">发布目录主页</h3><p id="gallery-context" class="dialog-sub">公开内容会固定为当前文件快照；HTML、脚本和 SVG 不会公开。</p>
+    <label class="text-field">页面标题<input id="gallery-title-input" type="text" maxlength="120"></label>
+    <div id="gallery-mode" class="mode-options"><label><input type="radio" name="gallery-mode" value="photos" checked>照片墙</label><label><input type="radio" name="gallery-mode" value="files">文件展示</label></div>
+    <div id="gallery-result" class="share-result"><textarea id="gallery-url" readonly aria-label="公开主页链接"></textarea></div>
+    <div class="dialog-actions"><button id="gallery-copy">复制</button><button id="gallery-close">关闭</button><button id="gallery-create" class="primary">生成主页</button></div>
   </div>
 </div>
 <script nonce="${nonce}">${script}</script>

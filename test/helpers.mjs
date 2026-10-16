@@ -183,7 +183,10 @@ export class MemoryDOState {
   alarm = null;
   storage = {
     get: async (key) => this.values.get(key),
-    put: async (key, value) => { this.values.set(key, structuredClone(value)); },
+    put: async (key, value) => {
+      if (typeof key === "string") this.values.set(key, structuredClone(value));
+      else for (const [entryKey, entryValue] of Object.entries(key)) this.values.set(entryKey, structuredClone(entryValue));
+    },
     delete: async (key) => this.values.delete(key),
     getAlarm: async () => this.alarm,
     setAlarm: async (time) => { this.alarm = time; },
