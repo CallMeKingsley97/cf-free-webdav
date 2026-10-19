@@ -115,12 +115,24 @@ export async function listChildren(
       }
     }
 
+    const markerKeys: string[] = [];
     for (const directoryPrefix of page.delimitedPrefixes) {
       if (isInternalKey(directoryPrefix.replace(/\/$/, ""))) continue;
       const childKey = directoryPrefix.slice(prefix.length).replace(/\/$/, "");
       if (!childKey || childKey.includes("/")) continue;
       const key = `${collectionKey ? `${collectionKey}/` : ""}${childKey}`;
-      if (!resources.has(key)) resources.set(key, impliedCollection(key));
+      if (!resources.has(key)) markerKeys.push(key);
+    }
+    // R2 list() with a delimiter reports nested folders only as delimitedPrefixes and omits
+    // their zero-byte marker objects, so without a HEAD the folder would fall back to
+    // impliedCollection() and show 1970. HEAD is a Class B op and runs concurrently.
+    if (markerKeys.length) {
+      const markers = await Promise.all(
+        markerKeys.map(async (key) => [key, await bucket.head(`${key}/`)] as const),
+      );
+      for (const [key, marker] of markers) {
+        resources.set(key, marker ? fromObject(marker, key, true) : impliedCollection(key));
+      }
     }
 
     if (resources.size > MAX_TREE_OBJECTS) throw new StorageLimitError();

@@ -259,6 +259,12 @@ const script = `
     return new Date(value).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
   }
 
+  // Folders without a real marker object have no timestamp; show a dash instead of 1970.
+  function fmtMod(value) {
+    const time = new Date(value).getTime();
+    return Number.isFinite(time) && time > 0 ? fmtDate(value) : '—';
+  }
+
   function signed(value, format) {
     const symbol = value > 0 ? '+' : value < 0 ? '−' : '±';
     return symbol + format(Math.abs(value));
@@ -373,7 +379,7 @@ const script = `
       const action = '<button data-rename="' + safeKey + '" aria-label="重命名 ' + attr(item.name) + '">重命名</button>' +
         '<button data-delete="' + safeKey + '" aria-label="移至回收站 ' + attr(item.name) + '">删除</button>' + previewButton + shareButton;
       return '<tr class="row"><td data-label="选择"><input class="row-check" type="checkbox" data-select="' + safeKey + '"' + checked + ' aria-label="选择 ' + attr(item.name) + '"></td><td data-label="名称">' + name + '</td><td data-label="大小">' + (item.collection ? '—' : fmtSize(item.size)) + '</td><td data-label="创建时间">' +
-        (item.createdAt ? fmtDate(item.createdAt) : '—') + '</td><td data-label="修改时间">' + fmtDate(item.uploaded) + '</td><td data-label="操作">' + action + '</td></tr>';
+        (item.createdAt ? fmtDate(item.createdAt) : '—') + '</td><td data-label="修改时间">' + fmtMod(item.uploaded) + '</td><td data-label="操作">' + action + '</td></tr>';
     }).join('');
     renderBulkState();
   }
