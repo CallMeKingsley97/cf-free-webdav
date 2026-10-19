@@ -340,9 +340,21 @@ const script = `
       link.addEventListener('click', (event) => {
         event.preventDefault();
         const next = link.dataset.empty === undefined ? segments.slice(0, Number(link.dataset.index) + 1) : [];
-        location.hash = encodeURIComponent(next.join('/'));
+        navigate(next);
       });
     });
+  }
+
+  // Navigate with pushState instead of assigning location.hash: clearing the hash
+  // (the root breadcrumb) makes the browser scroll back to the top of the document,
+  // which throws the file list out of view. pushState never scrolls. Back/forward and
+  // manual hash edits are still handled by the popstate/hashchange listeners.
+  function navigate(segments) {
+    const hash = encodeURIComponent(segments.join('/'));
+    const url = location.pathname + location.search + (hash ? '#' + hash : '');
+    if (url === location.pathname + location.search + location.hash) return;
+    history.pushState(null, '', url);
+    initialize();
   }
 
   function renderEntries(entries) {
@@ -862,7 +874,7 @@ const script = `
     const revokeInbox = event.target.closest('[data-revoke-inbox]');
     const revokeGallery = event.target.closest('[data-revoke-gallery]');
     const copyGallery = event.target.closest('[data-copy-gallery]');
-    if (dir) { event.preventDefault(); location.hash = encodeURIComponent(dir.dataset.dir || ''); }
+    if (dir) { event.preventDefault(); navigate(dir.dataset.dir.split('/')); }
     else if (del) { event.preventDefault(); try { if (await remove(del.dataset.delete)) loadFiles(); } catch (error) { notify(error.message || '删除失败', true); } }
     else if (ren) { event.preventDefault(); try { await rename(ren.dataset.rename); loadFiles(); } catch (error) { notify(error.message || '重命名失败', true); } }
     else if (shareButton) { event.preventDefault(); share(shareButton.dataset.share).catch((error) => notify(error.message || '分享失败', true)); }
@@ -989,6 +1001,7 @@ const script = `
   });
   ${fileMapScript}
   window.addEventListener('hashchange', initialize);
+  window.addEventListener('popstate', initialize);
   initialize();
 `;
 
