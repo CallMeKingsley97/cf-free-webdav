@@ -104,7 +104,7 @@ const style = `
   .subline { display: block; margin-top: 4px; color: #8a98ab; font-size: 10px; font-weight: 450; overflow-wrap: anywhere; }
   .empty-cell { padding: 60px 24px !important; text-align: center !important; color: #7b8aa0 !important; font-weight: 450 !important; }
   .empty-icon { display: block; width: 36px; height: 36px; margin: 0 auto 10px; color: #9aa9bc; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-  #message { position: fixed; z-index: 20; left: 50%; bottom: 22px; max-width: calc(100vw - 32px); padding: 12px 17px; transform: translateX(-50%); border: 1px solid #ffffff20; border-radius: 12px; background: #17243a; color: #fff; font-size: 13px; box-shadow: 0 12px 32px #14233b30; opacity: 0; pointer-events: none; transition: opacity .2s ease; }
+  #message { position: fixed; z-index: 100; left: 50%; bottom: 22px; max-width: calc(100vw - 32px); padding: 12px 17px; transform: translateX(-50%); border: 1px solid #ffffff20; border-radius: 12px; background: #17243a; color: #fff; font-size: 13px; box-shadow: 0 12px 32px #14233b30; opacity: 0; pointer-events: none; transition: opacity .2s ease; }
   #message.show { opacity: 1; }
   #message.error { background: #b9363e; }
   .dialog-backdrop { position: fixed; inset: 0; z-index: 30; display: none; place-items: center; padding: 20px; background: #17243a59; backdrop-filter: blur(3px); }
