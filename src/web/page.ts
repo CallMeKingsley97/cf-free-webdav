@@ -104,7 +104,7 @@ const style = `
   .subline { display: block; margin-top: 4px; color: #8a98ab; font-size: 10px; font-weight: 450; overflow-wrap: anywhere; }
   .empty-cell { padding: 60px 24px !important; text-align: center !important; color: #7b8aa0 !important; font-weight: 450 !important; }
   .empty-icon { display: block; width: 36px; height: 36px; margin: 0 auto 10px; color: #9aa9bc; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-  #message { position: fixed; z-index: 20; left: 50%; bottom: 22px; max-width: calc(100vw - 32px); padding: 12px 17px; transform: translateX(-50%); border: 1px solid #ffffff20; border-radius: 12px; background: #17243a; color: #fff; font-size: 13px; box-shadow: 0 12px 32px #14233b30; opacity: 0; pointer-events: none; transition: opacity .2s ease; }
+  #message { position: fixed; z-index: 100; left: 50%; bottom: 22px; max-width: calc(100vw - 32px); padding: 12px 17px; transform: translateX(-50%); border: 1px solid #ffffff20; border-radius: 12px; background: #17243a; color: #fff; font-size: 13px; box-shadow: 0 12px 32px #14233b30; opacity: 0; pointer-events: none; transition: opacity .2s ease; }
   #message.show { opacity: 1; }
   #message.error { background: #b9363e; }
   .dialog-backdrop { position: fixed; inset: 0; z-index: 30; display: none; place-items: center; padding: 20px; background: #17243a59; backdrop-filter: blur(3px); }
@@ -259,6 +259,12 @@ const script = `
     return new Date(value).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
   }
 
+  // Folders without a real marker object have no timestamp; show a dash instead of 1970.
+  function fmtMod(value) {
+    const time = new Date(value).getTime();
+    return Number.isFinite(time) && time > 0 ? fmtDate(value) : '—';
+  }
+
   function signed(value, format) {
     const symbol = value > 0 ? '+' : value < 0 ? '−' : '±';
     return symbol + format(Math.abs(value));
@@ -334,9 +340,21 @@ const script = `
       link.addEventListener('click', (event) => {
         event.preventDefault();
         const next = link.dataset.empty === undefined ? segments.slice(0, Number(link.dataset.index) + 1) : [];
-        location.hash = encodeURIComponent(next.join('/'));
+        navigate(next);
       });
     });
+  }
+
+  // Navigate with pushState instead of assigning location.hash: clearing the hash
+  // (the root breadcrumb) makes the browser scroll back to the top of the document,
+  // which throws the file list out of view. pushState never scrolls. Back/forward and
+  // manual hash edits are still handled by the popstate/hashchange listeners.
+  function navigate(segments) {
+    const hash = encodeURIComponent(segments.join('/'));
+    const url = location.pathname + location.search + (hash ? '#' + hash : '');
+    if (url === location.pathname + location.search + location.hash) return;
+    history.pushState(null, '', url);
+    initialize();
   }
 
   function renderEntries(entries) {
@@ -373,7 +391,7 @@ const script = `
       const action = '<button data-rename="' + safeKey + '" aria-label="重命名 ' + attr(item.name) + '">重命名</button>' +
         '<button data-delete="' + safeKey + '" aria-label="移至回收站 ' + attr(item.name) + '">删除</button>' + previewButton + shareButton;
       return '<tr class="row"><td data-label="选择"><input class="row-check" type="checkbox" data-select="' + safeKey + '"' + checked + ' aria-label="选择 ' + attr(item.name) + '"></td><td data-label="名称">' + name + '</td><td data-label="大小">' + (item.collection ? '—' : fmtSize(item.size)) + '</td><td data-label="创建时间">' +
-        (item.createdAt ? fmtDate(item.createdAt) : '—') + '</td><td data-label="修改时间">' + fmtDate(item.uploaded) + '</td><td data-label="操作">' + action + '</td></tr>';
+        (item.createdAt ? fmtDate(item.createdAt) : '—') + '</td><td data-label="修改时间">' + fmtMod(item.uploaded) + '</td><td data-label="操作">' + action + '</td></tr>';
     }).join('');
     renderBulkState();
   }
@@ -856,7 +874,7 @@ const script = `
     const revokeInbox = event.target.closest('[data-revoke-inbox]');
     const revokeGallery = event.target.closest('[data-revoke-gallery]');
     const copyGallery = event.target.closest('[data-copy-gallery]');
-    if (dir) { event.preventDefault(); location.hash = encodeURIComponent(dir.dataset.dir || ''); }
+    if (dir) { event.preventDefault(); navigate(dir.dataset.dir.split('/')); }
     else if (del) { event.preventDefault(); try { if (await remove(del.dataset.delete)) loadFiles(); } catch (error) { notify(error.message || '删除失败', true); } }
     else if (ren) { event.preventDefault(); try { await rename(ren.dataset.rename); loadFiles(); } catch (error) { notify(error.message || '重命名失败', true); } }
     else if (shareButton) { event.preventDefault(); share(shareButton.dataset.share).catch((error) => notify(error.message || '分享失败', true)); }
@@ -983,6 +1001,7 @@ const script = `
   });
   ${fileMapScript}
   window.addEventListener('hashchange', initialize);
+  window.addEventListener('popstate', initialize);
   initialize();
 `;
 
